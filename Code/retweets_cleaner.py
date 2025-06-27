@@ -52,7 +52,7 @@ def clean_retweets_data():
     def extract_retweet_content(text):
         """Extract the original content from RT format"""
         if pd.isna(text):
-            return None, None, None
+            return None, None
             
         text_str = str(text).strip()
         
@@ -63,10 +63,10 @@ def clean_retweets_data():
         if match:
             original_author = match.group(1)
             original_content = match.group(2).strip()
-            return original_author, original_content, text_str
+            return original_author, original_content
         else:
-            # If not standard RT format, treat as is
-            return None, text_str, text_str
+            # If not standard RT format, mark for removal
+            return None, None
     
     print("✓ Extracting retweet content...")
     
@@ -74,14 +74,18 @@ def clean_retweets_data():
     extraction_results = df_clean['fullText'].apply(extract_retweet_content)
     df_clean['originalAuthor'] = [x[0] for x in extraction_results]
     df_clean['originalContent'] = [x[1] for x in extraction_results]
-    df_clean['cleanedText'] = [x[2] for x in extraction_results]
     
-    # 3. Remove retweets that couldn't be properly parsed
+    # 3. Remove retweets that couldn't be properly parsed (non-RT format)
     before_parsing = len(df_clean)
-    df_clean = df_clean.dropna(subset=['cleanedText'])
+    df_clean = df_clean.dropna(subset=['originalAuthor', 'originalContent'])
     removed_unparseable = before_parsing - len(df_clean)
     if removed_unparseable > 0:
-        print(f"✓ Removed {removed_unparseable} unparseable retweets")
+        print(f"✓ Removed {removed_unparseable} non-RT format entries")
+    
+    # 3.1. Remove fullText column after extracting originalAuthor and originalContent
+    if 'fullText' in df_clean.columns:
+        df_clean = df_clean.drop(columns=['fullText'])
+        print("✓ Removed fullText column")
     
     # 4. Remove duplicates based on original content
     before_dedup = len(df_clean)
@@ -93,13 +97,10 @@ def clean_retweets_data():
     # 5. Clean timestamps
     print("✓ Processing timestamps...")
     df_clean['createdAt'] = pd.to_datetime(df_clean['createdAt'])
-    df_clean['year'] = df_clean['createdAt'].dt.year
-    df_clean['month'] = df_clean['createdAt'].dt.month
-    df_clean['day_of_week'] = df_clean['createdAt'].dt.day_name()
     
-    # 6. Clean and standardize text content
+    # 6. Clean and standardize original content text
     def clean_text_content(text):
-        """Basic text cleaning for retweets"""
+        """Basic text cleaning for retweet content"""
         if pd.isna(text):
             return ""
         
@@ -110,8 +111,7 @@ def clean_retweets_data():
         text = text.replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
         return text
     
-    print("✓ Cleaning text content...")
-    df_clean['cleanedText'] = df_clean['cleanedText'].apply(clean_text_content)
+    print("✓ Cleaning original content text...")
     df_clean['originalContent'] = df_clean['originalContent'].apply(clean_text_content)
     
     # 7. Add retweet-specific analytics
@@ -123,7 +123,6 @@ def clean_retweets_data():
     
     # Text length statistics
     df_clean['originalTextLength'] = df_clean['originalContent'].str.len()
-    df_clean['hasMedia'] = df_clean['cleanedText'].str.contains('https://t.co/', na=False)
     
     # 8. Remove very short or invalid retweets
     before_length_filter = len(df_clean)
@@ -146,9 +145,6 @@ def clean_retweets_data():
     
     print(f"\nTop retweeted authors:")
     print(df_clean['originalAuthor'].value_counts().head(10))
-    
-    print(f"\nRetweets by year:")
-    print(df_clean['year'].value_counts().sort_index())
     
     # 10. Save cleaned data
     try:
