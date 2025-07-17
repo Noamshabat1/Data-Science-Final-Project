@@ -25,15 +25,15 @@ def clean_tweets_data():
         print(f"✓ Loaded {len(df):,} original tweets from {input_file}")
         print(f"  Columns: {len(df.columns)}")
     except Exception as e:
-        print(f"❌ Error loading file: {e}")
+        print(f"Error loading file: {e}")
         return
 
     print(f"\nInitial data shape: {df.shape}")
 
     # Display basic info
     print(f"\nData Overview:")
-    print(f"- Date range: {df['createdAt'].min()} to {df['createdAt'].max()}")
-    print(f"- Missing fullText: {df['fullText'].isna().sum()}")
+    print(f"- Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+    print(f"- Missing text: {df['text'].isna().sum()}")
 
     # Start cleaning process
     print(f"\n" + "-" * 40)
@@ -42,7 +42,7 @@ def clean_tweets_data():
 
     # 1. Remove tweets with missing text
     initial_count = len(df)
-    df_clean = df.dropna(subset=['fullText']).copy()
+    df_clean = df.dropna(subset=['text']).copy()
     removed_empty = initial_count - len(df_clean)
     if removed_empty > 0:
         print(f"✓ Removed {removed_empty} tweets with missing text")
@@ -67,7 +67,14 @@ def clean_tweets_data():
         return text.strip()
 
     print("✓ Cleaning tweet text...")
-    df_clean['fullText'] = df_clean['fullText'].apply(clean_tweet_text)
+    df_clean['text'] = df_clean['text'].apply(clean_tweet_text)
+    
+    # Remove rows that have only non-alphanumeric characters
+    before_alpha_filter = len(df_clean)
+    df_clean = df_clean[df_clean['text'].str.contains(r'[a-zA-Z0-9]', regex=True, na=False)]
+    removed_non_alpha = before_alpha_filter - len(df_clean)
+    if removed_non_alpha > 0:
+        print(f"✓ Removed {removed_non_alpha} tweets with only non-alphanumeric characters")
 
     # 3. Remove exact duplicates
     before_dedup = len(df_clean)
@@ -76,7 +83,7 @@ def clean_tweets_data():
     if removed_duplicates > 0:
         print(f"✓ Removed {removed_duplicates} duplicate tweets")
 
-    df_clean = df_clean.sort_values(by='createdAt')
+    df_clean = df_clean.sort_values(by='timestamp')
 
     # Final statistics
     print(f"\n" + "-" * 40)
@@ -96,7 +103,7 @@ def clean_tweets_data():
 
 
     except Exception as e:
-        print(f"❌ Error saving file: {e}")
+        print(f"Error saving file: {e}")
 
 
 if __name__ == "__main__":

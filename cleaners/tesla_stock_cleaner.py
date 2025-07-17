@@ -1,23 +1,29 @@
 import os
 import pandas as pd
 
-script_dir = os.path.dirname(os.path.realpath(__file__))
-project_root = os.path.abspath(os.path.join(script_dir, os.pardir))  # goes up from cleaners/ to project root
-input_path = os.path.join(project_root, 'Data', 'original', 'tesla_stock_data_2000_2025.csv')
-output_dir = os.path.join(project_root, 'Data', 'clean')
 
-raw_stock = pd.read_csv(input_path, header=0)
-clean_stock = raw_stock.drop(index=[0, 1]).reset_index(drop=True)
+def clean_stock_data():
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, os.pardir))  # goes up from cleaners/ to project root
+    input_path = os.path.join(project_root, 'Data', 'original', 'tesla_stock_data_2000_2025.csv')
+    output_dir = os.path.join(project_root, 'Data', 'clean')
 
-clean_stock['Date'] = pd.to_datetime(clean_stock['Price']).dt.date
+    raw_stock = pd.read_csv(input_path, header=0)
+    clean_stock = raw_stock.drop(index=[0, 1]).reset_index(drop=True)
 
-for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-    clean_stock[col] = pd.to_numeric(clean_stock[col], errors='coerce')
+    clean_stock['Date'] = pd.to_datetime(clean_stock['Price']).dt.date
 
-clean_stock = clean_stock[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        clean_stock[col] = pd.to_numeric(clean_stock[col], errors='coerce')
 
-os.makedirs(output_dir, exist_ok=True)
-output_path = os.path.join(output_dir, 'clean_stock.csv')
-clean_stock.to_csv(output_path, index=False)
+    clean_stock = clean_stock[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
 
-print(f"Cleaned stock data saved to: {output_path}")
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, 'clean_stock.csv')
+    clean_stock.to_csv(output_path, index=False)
+
+    print(f"Cleaned stock data saved to: {output_path}")
+
+
+if __name__ == "__main__":
+    clean_stock_data()

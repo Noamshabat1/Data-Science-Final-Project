@@ -1,215 +1,134 @@
-import pandas as pd
 import os
+import sys
+import pandas as pd
+import logging
 
 
-def remove_classification_columns(df, category_name):
-    """
-    Removes isReply and isRetweet columns from the dataframe.
-
-    Args:
-        df: pandas DataFrame to clean
-        category_name: string describing the category for logging
-
-    Returns:
-        pandas DataFrame with classification columns removed
-    """
-    columns_to_remove = []
-
-    # Check and collect columns to remove
-    if 'isReply' in df.columns:
-        columns_to_remove.append('isReply')
-    if 'isRetweet' in df.columns:
-        columns_to_remove.append('isRetweet')
-
-    # Remove the columns if any exist
-    if columns_to_remove:
-        df_cleaned = df.drop(columns=columns_to_remove)
-        print(f"   Removed classification columns from {category_name}: {columns_to_remove}")
-        return df_cleaned
-    else:
-        print(f"   No classification columns found in {category_name}")
-        return df
+def setup_logging():
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
 
-columns_to_remove = ['twitterUrl', 'isConversationControlled', 'possiblySensitive', 'isPinned', ]
+def load_data(input_path: str) -> pd.DataFrame:
+    usecols = [
+        "fullText",
+        "createdAt",
+        "isRetweet",
+        "isReply",
+        "retweetCount",
+        "replyCount",
+        "likeCount",
+        "quoteCount",
+        "viewCount",
+        "bookmarkCount",
+        "quote"
+    ]
+    df = pd.read_csv(input_path, usecols=usecols, dtype=str)
+    logging.info(f"Loaded {len(df):,} rows from {input_path}")
+    return df
 
 
-def preprocess_musk_posts():
-    """
-    Preprocesses Elon Musk's posts from CSV and splits them into three categories:
-    1. Original Tweets (not replies, not retweets)
-    2. Replies (isReply = True)
-    3. Retweets (isRetweet = True OR fullText starts with "RT @")
-    """
+def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "fullText": "text",
+        "createdAt": "timestamp"
+    }
+    df = df.rename(columns=rename_map, errors="raise")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["text_length"] = df["text"].str.len().fillna(0).astype(int)
+    return df
 
-    # Define file paths
-    input_file = os.path.join("..", "Data", "original", "all_musk_posts.csv")
-    output_dir = os.path.join("..", "Data", "splitted")
 
-    # Create output directory if it doesn't exist
+def main_split_data(df: pd.DataFrame):
+    # Create boolean masks for comprehensive classification
+    retweet_mask = pd.Series(False, index=df.index, dtype=bool)
+    reply_mask = pd.Series(False, index=df.index, dtype=bool)
+    
+    # Retweet detection: boolean flag OR text pattern
+    retweet_mask = retweet_mask | (df["isRetweet"] == "True")
+    rt_pattern = r'^RT\s+@(\w+):\s*(.*)'
+    retweet_mask = retweet_mask | df["text"].str.contains(rt_pattern, regex=True, na=False)
+    
+    # Reply detection: boolean flag OR text pattern (excluding retweets)
+    reply_mask = reply_mask | (df["isReply"] == "True")
+    at_pattern = r'^@\w+'
+    reply_mask = reply_mask | df["text"].str.contains(at_pattern, regex=True, na=False)
+    
+    # Apply masks to split data
+    retweets = df[retweet_mask].copy()
+    replies = df[reply_mask & (~retweet_mask)].copy()  # Exclude retweets from replies
+    originals = df[~retweet_mask & ~reply_mask].copy()
+
+    total = len(df)
+    categorized = len(retweets) + len(replies) + len(originals)
+    logging.info(f"Split complete: {categorized}/{total} posts categorized")
+    
+    return retweets, replies, originals
+
+
+def drop_flags(df: pd.DataFrame) -> pd.DataFrame:
+    return df.drop(columns=["isRetweet", "isReply"], errors="ignore")
+
+
+def save_df(df: pd.DataFrame, path: str):
+    try:
+        df.to_csv(path, index=False)
+        logging.info(f"Saved {len(df):,} rows to {path}")
+    except Exception as e:
+        logging.error(f"Failed to save {path}: {e}")
+
+
+def preview(df: pd.DataFrame, name: str):
+    n = min(3, len(df))
+    if n == 0:
+        logging.info(f"No rows to preview for {name}")
+        return
+    sample = df.sample(n, random_state=0)
+    logging.info(f"--- Preview of {name} ({n} rows) ---")
+    for _, row in sample.iterrows():
+        ts = row["timestamp"]
+        text = row["text"].replace("\n", " ")
+        logging.info(f"{ts.date()} → {text[:80]}...")
+
+
+def main_data_splitter():
+    setup_logging()
+
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+    input_path = os.path.join(project_root, "Data", "original", "all_musk_posts.csv")
+    output_dir = os.path.join(project_root, "Data", "splitted")
     os.makedirs(output_dir, exist_ok=True)
 
-    print("Loading data from all_musk_posts.csv...")
+    df = load_data(input_path)
+    df = standardize_columns(df)
+    retweets, replies, originals = main_split_data(df)
 
-    # Load the CSV file with proper handling of mixed types
-    try:
-        df = pd.read_csv(input_file, low_memory=False)
-        print(f"Successfully loaded {len(df)} posts")
-    except Exception as e:
-        print(f"Error loading CSV file: {e}")
-        return
+    for subset, fname in [
+        (retweets, "musk_retweets.csv"),
+        (replies, "musk_replies.csv"),
+        (originals, "musk_tweets.csv")
+    ]:
+        clean = drop_flags(subset)
+        save_df(clean, os.path.join(output_dir, fname))
 
-    # Display basic info about the dataset
-    print(f"\nDataset Info:")
-    print(f"Total posts: {len(df)}")
-    print(f"Columns: {len(df.columns)}")
+    preview(retweets, "Retweets")
+    preview(replies, "Replies")
+    preview(originals, "Original Tweets")
 
-    # Check for missing values in key columns
-    print(f"\nMissing values in key columns:")
-    print(f"isReply: {df['isReply'].isna().sum()}")
-    print(f"isRetweet: {df['isRetweet'].isna().sum()}")
-    if 'fullText' in df.columns:
-        print(f"fullText: {df['fullText'].isna().sum()}")
-
-    for column in columns_to_remove:
-        if column in df.columns:
-            df = df.drop(columns=[column])
-        else:
-            print(f"\n⚠️  '{column}' column not found, skipping removal")
-
-    # Do not fill NaN values - keep them as NaN for proper analysis
-
-    # Filter rows where URL starts with 'https://x.com/elonmusk'
-    print("\nFiltering posts by URL...")
-    initial_count = len(df)
-
-    # Check if 'url' column exists
-    if 'url' in df.columns:
-        # Remove rows where URL doesn't start with 'https://x.com/elonmusk'
-        df = df[df['url'].astype(str).str.startswith('https://x.com/elonmusk', na=False)]
-        filtered_count = len(df)
-        removed_count = initial_count - filtered_count
-
-    else:
-        print("⚠️  Warning: 'url' column not found, skipping URL filter")
-
-    # Split the data into three categories
-    print("\nSplitting data into categories...")
-
-    # Check for retweets using multiple conditions:
-    # 1. isRetweet = True, OR
-    # 2. fullText starts with "RT @" pattern
-    retweet_mask = pd.Series(False, index=df.index, dtype=bool)
-
-    # Condition 1: isRetweet column is True
-    if 'isRetweet' in df.columns:
-        retweet_mask = retweet_mask | (df['isRetweet'] == True)
-
-    # Condition 2: fullText starts with "RT @"
-    if 'fullText' in df.columns:
-        rt_pattern = r'^RT\s+@(\w+):\s*(.*)'
-        text_series = df['fullText']
-        text_mask = text_series.str.contains(rt_pattern, regex=True, na=False)  # type: ignore
-        retweet_mask = retweet_mask | text_mask
-
-    retweets = df[retweet_mask].copy()
-
-    print(f"Retweets: {len(retweets)}")
-
-    # 2. Replies (isReply = True OR starts with "@", but not retweets)
-    reply_mask = pd.Series(False, index=df.index, dtype=bool)
-
-    # Condition 1: isReply column is True
-    if 'isReply' in df.columns:
-        reply_mask = reply_mask | (df['isReply'] == True)
-
-    # Condition 2: fullText starts with "@"
-    if 'fullText' in df.columns:
-        at_pattern = r'^@\w+'
-        at_series = df['fullText']
-        at_mask = at_series.str.contains(at_pattern, regex=True, na=False)  # type: ignore
-        reply_mask = reply_mask | at_mask
-
-    # Exclude retweets from replies
-    replies = df[reply_mask & (~retweet_mask)].copy()
-    print(f"Replies: {len(replies)}")
-
-    # 3. Original Tweets (neither replies nor retweets)
-    if 'isReply' in df.columns:
-        original_tweets = df[(df['isReply'] != True) & ~retweet_mask].copy()
-    else:
-        original_tweets = df[~retweet_mask].copy()
-    print(f"Original Tweets: {len(original_tweets)}")
-
-    # Verify totals
-    total_categorized = len(retweets) + len(replies) + len(original_tweets)
-    print(f"Total categorized: {total_categorized}")
-    print(f"Original total: {len(df)}")
-
-    # Remove classification columns from all categories
-    print("\nRemoving classification columns from split data...")
-    retweets = remove_classification_columns(retweets, "retweets")
-    replies = remove_classification_columns(replies, "replies")
-    original_tweets = remove_classification_columns(original_tweets, "original tweets")
-
-    # Save each category to separate CSV files
-    print("\nSaving split data to CSV files...")
-
-    try:
-        # Function to clean and save dataframe
-        def clean_and_save(df, file_path, category_name):
-            # Get original column count
-            original_cols = len(df.columns)
-
-            # Find columns with all NaN values
-            all_nan_cols = df.columns[df.isna().all()].tolist()
-
-            # Drop columns with all NaN values
-            if all_nan_cols:
-                df_cleaned = df.drop(columns=all_nan_cols)
-                print(f"   Removed {len(all_nan_cols)} columns with all NaN values: {all_nan_cols}")
-            else:
-                df_cleaned = df
-                print(f"   No columns with all NaN values found")
-
-            # Save cleaned dataframe
-            df_cleaned.to_csv(file_path, index=False)
-
-            final_cols = len(df_cleaned.columns)
-            print(f"✓ Saved {len(df)} {category_name} to {file_path}")
-            print(f"   Columns: {original_cols} → {final_cols}")
-
-            return df_cleaned
-
-        # Save retweets
-        retweets_file = os.path.join(output_dir, "musk_retweets.csv")
-        print(f"\nProcessing Retweets:")
-        retweets_cleaned = clean_and_save(retweets, retweets_file, "retweets")
-
-        # Save replies
-        replies_file = os.path.join(output_dir, "musk_replies.csv")
-        print(f"\nProcessing Replies:")
-        replies_cleaned = clean_and_save(replies, replies_file, "replies")
-
-        # Save original tweets
-        tweets_file = os.path.join(output_dir, "musk_tweets.csv")
-        print(f"\nProcessing Original Tweets:")
-        tweets_cleaned = clean_and_save(original_tweets, tweets_file, "original tweets")
-
-        print(f"\nAll files saved successfully in {output_dir}")
-
-        # Display summary statistics
-        print("\n" + "=" * 50)
-        print("SUMMARY")
-        print("=" * 50)
-        print(f"Filtered dataset: {len(df):,} posts")
-        print(f"├── Retweets: {len(retweets):,} ({len(retweets) / len(df) * 100:.1f}%)")
-        print(f"├── Replies: {len(replies):,} ({len(replies) / len(df) * 100:.1f}%)")
-        print(f"└── Original Tweets: {len(original_tweets):,} ({len(original_tweets) / len(df) * 100:.1f}%)")
-
-    except Exception as e:
-        print(f"Error saving files: {e}")
+    total = len(df)
+    logging.info(
+        "Split summary: total=%d, retweets=%d (%.1f%%), replies=%d (%.1f%%), originals=%d (%.1f%%)",
+        total,
+        len(retweets), len(retweets) / total * 100,
+        len(replies), len(replies) / total * 100,
+        len(originals), len(originals) / total * 100,
+    )
 
 
 if __name__ == "__main__":
-    preprocess_musk_posts()
+    main_data_splitter()

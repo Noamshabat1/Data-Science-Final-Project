@@ -27,15 +27,15 @@ def clean_retweets_data():
         print(f"✓ Loaded {len(df):,} retweets from {input_file}")
         print(f"  Columns: {len(df.columns)}")
     except Exception as e:
-        print(f"❌ Error loading file: {e}")
+        print(f"Error loading file: {e}")
         return
 
     print(f"\nInitial data shape: {df.shape}")
 
     # Display basic info
     print(f"\nData Overview:")
-    print(f"- Date range: {df['createdAt'].min()} to {df['createdAt'].max()}")
-    print(f"- Missing fullText: {df['fullText'].isna().sum()}")
+    print(f"- Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+    print(f"- Missing text: {df['text'].isna().sum()}")
 
     # Start cleaning process
     print(f"\n" + "-" * 40)
@@ -44,7 +44,7 @@ def clean_retweets_data():
 
     # 1. Remove retweets with missing text
     initial_count = len(df)
-    df_clean = df.dropna(subset=['fullText']).copy()
+    df_clean = df.dropna(subset=['text']).copy()
     removed_empty = initial_count - len(df_clean)
     if removed_empty > 0:
         print(f"✓ Removed {removed_empty} retweets with missing text")
@@ -72,32 +72,32 @@ def clean_retweets_data():
     print("✓ Extracting retweet content...")
 
     # Apply content extraction
-    extraction_results = df_clean['fullText'].apply(extract_retweet_content)
+    extraction_results = df_clean['text'].apply(extract_retweet_content)
     df_clean['originalAuthor'] = [x[0] for x in extraction_results]
-    df_clean['originalContent'] = [x[1] for x in extraction_results]
+    df_clean['tweet'] = [x[1] for x in extraction_results]
 
     # 3. Remove retweets that couldn't be properly parsed (non-RT format)
     before_parsing = len(df_clean)
-    df_clean = df_clean.dropna(subset=['originalAuthor', 'originalContent'])
+    df_clean = df_clean.dropna(subset=['originalAuthor', 'tweet'])
     removed_unparseable = before_parsing - len(df_clean)
     if removed_unparseable > 0:
         print(f"✓ Removed {removed_unparseable} non-RT format entries")
 
-    # 3.1. Remove fullText column after extracting originalAuthor and originalContent
-    if 'fullText' in df_clean.columns:
-        df_clean = df_clean.drop(columns=['fullText'])
-        print("✓ Removed fullText column")
+    # 3.1. Remove text column after extracting originalAuthor and originalContent
+    if 'text' in df_clean.columns:
+        df_clean = df_clean.drop(columns=['text'])
+        print("✓ Removed text column")
 
     # 4. Remove duplicates based on original content
     before_dedup = len(df_clean)
-    df_clean = df_clean.drop_duplicates(subset=['originalContent'], keep='first')
+    df_clean = df_clean.drop_duplicates(subset=['tweet'], keep='first')
     removed_duplicates = before_dedup - len(df_clean)
     if removed_duplicates > 0:
         print(f"✓ Removed {removed_duplicates} duplicate retweets")
 
     # 5. Clean timestamps
     print("✓ Processing timestamps...")
-    df_clean['createdAt'] = pd.to_datetime(df_clean['createdAt'])
+    df_clean['timestamp'] = pd.to_datetime(df_clean['timestamp'])
 
     # 6. Clean and standardize original content text
     def clean_text_content(text):
@@ -113,7 +113,14 @@ def clean_retweets_data():
         return text
 
     print("✓ Cleaning original content text...")
-    df_clean['originalContent'] = df_clean['originalContent'].apply(clean_text_content)
+    df_clean['tweet'] = df_clean['tweet'].apply(clean_text_content)
+    
+    # Remove rows that have only non-alphanumeric characters
+    before_alpha_filter = len(df_clean)
+    df_clean = df_clean[df_clean['tweet'].str.contains(r'[a-zA-Z0-9]', regex=True, na=False)]
+    removed_non_alpha = before_alpha_filter - len(df_clean)
+    if removed_non_alpha > 0:
+        print(f"✓ Removed {removed_non_alpha} tweets with only non-alphanumeric characters")
 
     # 7. Add retweet-specific analytics
     print("✓ Adding retweet analytics...")
@@ -123,7 +130,7 @@ def clean_retweets_data():
     df_clean['authorRetweetCount'] = df_clean['originalAuthor'].map(author_counts.get)
 
     # Text length statistics
-    df_clean['originalTextLength'] = df_clean['originalContent'].str.len()
+    df_clean['originalTextLength'] = df_clean['tweet'].str.len()
 
     # 8. Remove very short or invalid retweets
     before_length_filter = len(df_clean)
@@ -133,7 +140,7 @@ def clean_retweets_data():
         print(f"✓ Removed {removed_short} very short retweets")
 
     # 9. Sort by creation date
-    df_clean = df_clean.sort_values(by='createdAt')
+    df_clean = df_clean.sort_values(by='timestamp')
 
     # Final statistics
     print(f"\n" + "-" * 40)
@@ -157,8 +164,8 @@ def clean_retweets_data():
         for i in range(min(3, len(df_clean))):
             row = df_clean.iloc[i]
             print(f"{i + 1}. Author: @{row['originalAuthor']}")
-            print(f"   Content: {row['originalContent'][:100]}...")
-            print(f"   Date: {row['createdAt']}")
+            print(f"   Content: {row['tweet'][:100]}...")
+            print(f"   Date: {row['timestamp']}")
             print(f"   Length: {row['originalTextLength']} chars")
             print()
 
