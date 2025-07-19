@@ -100,8 +100,8 @@ def main_data_splitter():
 
     script_dir = os.path.dirname(os.path.realpath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
-    input_path = os.path.join(project_root, "Data", "original", "all_musk_posts.csv")
-    output_dir = os.path.join(project_root, "Data", "splitted")
+    input_path = os.path.join(project_root, "data", "original", "all_musk_posts.csv")
+    output_dir = os.path.join(project_root, "data", "splitted")
     os.makedirs(output_dir, exist_ok=True)
 
     df = load_data(input_path)

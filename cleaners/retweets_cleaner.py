@@ -14,8 +14,8 @@ def clean_retweets_data():
     """
 
     # Define file paths
-    input_file = os.path.join("..", "Data", "splitted", "musk_retweets.csv")
-    output_file = os.path.join("..", "Data", "clean", "clean_musk_retweets.csv")
+    input_file = os.path.join("..", "data", "splitted", "musk_retweets.csv")
+    output_file = os.path.join("..", "data", "clean", "clean_musk_retweets.csv")
 
     print("=" * 60)
     print("RETWEETS DATA CLEANER")
@@ -33,7 +33,7 @@ def clean_retweets_data():
     print(f"\nInitial data shape: {df.shape}")
 
     # Display basic info
-    print(f"\nData Overview:")
+    print(f"\ndata Overview:")
     print(f"- Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
     print(f"- Missing text: {df['text'].isna().sum()}")
 
@@ -149,7 +149,7 @@ def clean_retweets_data():
     print(f"Original retweets: {initial_count:,}")
     print(f"Final retweets: {len(df_clean):,}")
     print(f"Removed total: {initial_count - len(df_clean):,}")
-    print(f"Data retention: {len(df_clean) / initial_count * 100:.1f}%")
+    print(f"data retention: {len(df_clean) / initial_count * 100:.1f}%")
 
     # 10. Save cleaned data
     try:

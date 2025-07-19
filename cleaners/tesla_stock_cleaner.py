@@ -5,8 +5,8 @@ import pandas as pd
 def clean_stock_data():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, os.pardir))  # goes up from cleaners/ to project root
-    input_path = os.path.join(project_root, 'Data', 'original', 'tesla_stock_data_2000_2025.csv')
-    output_dir = os.path.join(project_root, 'Data', 'clean')
+    input_path = os.path.join(project_root, 'data', 'original', 'tesla_stock_data_2000_2025.csv')
+    output_dir = os.path.join(project_root, 'data', 'clean')
 
     raw_stock = pd.read_csv(input_path, header=0)
     clean_stock = raw_stock.drop(index=[0, 1]).reset_index(drop=True)

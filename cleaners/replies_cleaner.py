@@ -4,8 +4,8 @@ import os
 
 def clean_replies():
     # Load replies data
-    input_file = os.path.join("..", "Data", "splitted", "musk_replies.csv")
-    output_file = os.path.join("..", "Data", "clean", "clean_musk_replies.csv")
+    input_file = os.path.join("..", "data", "splitted", "musk_replies.csv")
+    output_file = os.path.join("..", "data", "clean", "clean_musk_replies.csv")
     
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
