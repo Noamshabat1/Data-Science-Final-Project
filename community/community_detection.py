@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 from matplotlib import pyplot as plt
+import seaborn as sns
 import community as community_louvain
 from sentence_transformers import SentenceTransformer
 from cache_utils import GraphCacheManager
@@ -11,10 +12,10 @@ from sklearn.manifold import TSNE
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from itertools import combinations
+from wordcloud import WordCloud
 
 SMALL_COMMUNITY_THRESHOLD = 20
 MERGE_THRESHOLD = 0.3
-MIN_COMMUNITY_SIZE = 5
 TOP_N = 20
 
 TITLE_FONT_SIZE = 12
@@ -24,8 +25,23 @@ STOP_WORDS = ['english', 'https', 'http', 'rt', 'co', 'is', 'the', 'and',
               'on', 'as', 'at', 'by', 'an', 'be', 'are', 'was', 'were', 'from',
               'will', 'they', 'he', 'she', 'you', 'we', 'they', 'my', 'your',]
 
+CHANGE_THRESHOLD = 0.2
+SIMILARITY_THRESHOLD_DEFAULT = 0.7
+TOP_K_DEFAULT = 10
+TSNE_COMPONENTS = 2
+TSNE_PERPLEXITY = 30
+TSNE_RANDOM_STATE = 42
+SPRING_LAYOUT_SEED = 42
+SPRING_LAYOUT_K = 2.0
+NODE_SIZE_SCALING = 30
+NODE_SIZE_MINIMUM = 10
+WORDCLOUD_WIDTH = 1600
+WORDCLOUD_HEIGHT = 800
+WORDCLOUD_BACKGROUND_COLOR = 'white'
+WORDCLOUD_COLORMAP = 'tab20'
+
 class TweetGraphBuilder:
-    def __init__(self, tweets, similarity_threshold=0.7, top_k=10, force_rebuild=False):
+    def __init__(self, tweets, similarity_threshold=SIMILARITY_THRESHOLD_DEFAULT, top_k=TOP_K_DEFAULT, force_rebuild=False):
         self.tweets = tweets
         self.similarity_threshold = similarity_threshold
         self.top_k = top_k
@@ -68,7 +84,7 @@ class TweetGraphBuilder:
     def visualize_raw_graph(self):
         if self.graph is None:
             raise ValueError("Graph not built yet.")
-        pos = nx.spring_layout(self.graph, seed=42)
+        pos = nx.spring_layout(self.graph, seed=SPRING_LAYOUT_SEED)
         plt.figure(figsize=(10, 8))
         nx.draw_networkx_nodes(self.graph, pos, node_color='skyblue', node_size=15, alpha=0.8)
         nx.draw_networkx_edges(self.graph, pos, edge_color='lightgray', alpha=0.3)
@@ -82,7 +98,7 @@ class TweetGraphBuilder:
         reduced = self.cache.load_tsne()
         if reduced is None:
             embeddings = self.embeddings
-            reduced = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(embeddings)
+            reduced = TSNE(n_components=TSNE_COMPONENTS, perplexity=TSNE_PERPLEXITY, random_state=TSNE_RANDOM_STATE).fit_transform(embeddings)
             self.cache.save_tsne(reduced)
 
         pos = {i: reduced[i] for i in range(len(reduced))}
@@ -165,10 +181,7 @@ class TweetGraphBuilder:
         if self.graph is None or not hasattr(self, 'partition'):
             raise ValueError("Graph not built or communities not detected.")
 
-        reduced = self.cache.load_tsne()
-        if reduced is None:
-            reduced = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(self.embeddings)
-            self.cache.save_tsne(reduced)
+        reduced = self._get_tsne_reduced_embeddings()
 
         pos = {i: reduced[i] for i in range(len(reduced))}
         cmap = plt.get_cmap('viridis', max(self.partition.values()) + 1)
@@ -184,10 +197,7 @@ class TweetGraphBuilder:
         if self.graph is None or not hasattr(self, 'partition'):
             raise ValueError("Graph not built or communities not detected.")
 
-        reduced = self.cache.load_tsne()
-        if reduced is None:
-            reduced = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(self.embeddings)
-            self.cache.save_tsne(reduced)
+        reduced = self._get_tsne_reduced_embeddings()
 
         community_pos = {}
         community_sizes = {}
@@ -203,17 +213,7 @@ class TweetGraphBuilder:
         labels = {}
         for comm_id, nodes in community_pos.items():
             texts = [self.tweets.iloc[node]['text'] for node, cid in self.partition.items() if cid == comm_id]
-            vectorizer = TfidfVectorizer(
-                stop_words=STOP_WORDS,
-                max_features=1,
-                token_pattern=r"(?u)\b[a-zA-Z_][a-zA-Z_]+\b"
-            )
-            try:
-                vectorizer.fit(texts)
-                words = vectorizer.get_feature_names_out()
-                label = words[0] if len(words) > 0 else f"Comm {comm_id}"
-            except:
-                label = f"Comm {comm_id}"
+            label = self._extract_community_label(comm_id, texts)
             labels[comm_id] = label
             G.add_node(comm_id, pos=community_pos[comm_id], size=community_sizes[comm_id], label=label)
 
@@ -222,9 +222,9 @@ class TweetGraphBuilder:
             if sim >= 0.6:
                 G.add_edge(id1, id2, weight=sim)
 
-        pos = nx.spring_layout(G, seed=42, k=2.0)
+        pos = nx.spring_layout(G, seed=SPRING_LAYOUT_SEED, k=SPRING_LAYOUT_K)
         # Ensure small communities are visible: minimum size 10, scale by 10
-        sizes = [max(G.nodes[n]['size'], 10) * 30 for n in G.nodes()]
+        sizes = [max(G.nodes[n]['size'], NODE_SIZE_MINIMUM) * NODE_SIZE_SCALING for n in G.nodes()]
         plt.figure(figsize=(20, 18))
         # Use tab20 colormap for clearer color separation
         cmap = plt.cm.get_cmap('tab20', len(G.nodes()) + 1)
@@ -243,6 +243,111 @@ class TweetGraphBuilder:
         nx.draw_networkx_edges(G, pos, alpha=0.3)
         plt.title("Community Graph After Merge (Node Size Reflects Community Size)", fontsize=24)
         plt.axis('off')
+        plt.show()
+
+    def visualize_community_wordcloud(self):
+        if self.graph is None or not hasattr(self, 'partition'):
+            raise ValueError("Graph not built or communities not detected.")
+
+        community_texts = {}
+        for node, comm_id in self.partition.items():
+            community_texts.setdefault(comm_id, []).append(self.tweets.iloc[node]['text'])
+
+        community_labels = {}
+        for comm_id, texts in community_texts.items():
+            label = self._extract_community_label(comm_id, texts)
+            community_labels[label] = len(texts)
+
+        wordcloud = WordCloud(width=WORDCLOUD_WIDTH, height=WORDCLOUD_HEIGHT, background_color=WORDCLOUD_BACKGROUND_COLOR, colormap=WORDCLOUD_COLORMAP)
+        wordcloud.generate_from_frequencies(community_labels)
+
+        plt.figure(figsize=(16, 8))
+        plt.imshow(wordcloud, interpolation='bilinear')
+        plt.axis('off')
+        plt.title("Community Word Cloud (Label Size Reflects Community Size)", fontsize=TITLE_FONT_SIZE)
+        plt.show()
+
+    def _extract_community_label(self, comm_id, texts):
+        vectorizer = TfidfVectorizer(
+            stop_words=STOP_WORDS,
+            max_features=1,
+            token_pattern=r"(?u)\b[a-zA-Z_][a-zA-Z_]+\b"
+        )
+        try:
+            vectorizer.fit(texts)
+            words = vectorizer.get_feature_names_out()
+            return words[0] if len(words) > 0 else f"Comm {comm_id}"
+        except:
+            return f"Comm {comm_id}"
+
+    def _get_tsne_reduced_embeddings(self):
+        reduced = self.cache.load_tsne()
+        if reduced is None:
+            reduced = TSNE(n_components=TSNE_COMPONENTS, perplexity=TSNE_PERPLEXITY, random_state=TSNE_RANDOM_STATE).fit_transform(self.embeddings)
+            self.cache.save_tsne(reduced)
+        return reduced
+
+    def analyze_community_stock_relationship(self, stock):
+        if self.graph is None or not hasattr(self, 'partition'):
+            raise ValueError("Graph not built or communities not detected.")
+
+        self.tweets['date'] = pd.to_datetime(self.tweets['timestamp']).dt.date
+        self.tweets['community'] = self.tweets.index.map(self.partition)
+
+        # Compute stock returns and significant change indicator
+        stock = stock.copy()
+        stock['return'] = stock['Close'].pct_change(periods=3)
+
+        stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
+
+        # Compute tweet counts by date/community, lagged by 1 day
+        tweet_counts = self.tweets.groupby(['date', 'community']).size().unstack(fill_value=0)
+        tweet_counts = tweet_counts.shift(1).dropna()  # lag tweets by 1 day
+        stock['date'] = pd.to_datetime(stock['Date']).dt.date
+        merged = pd.merge(tweet_counts, stock[['date', 'significant_change']], on='date')
+
+        sig_days = merged[merged['significant_change']]
+        non_sig_days = merged[~merged['significant_change']]
+
+        mean_sig = sig_days.drop(columns=['significant_change', 'date']).mean()
+        mean_non_sig = non_sig_days.drop(columns=['significant_change', 'date']).mean()
+
+        diff = mean_sig - mean_non_sig
+        top_n = 15
+        top_diff = diff.abs().sort_values(ascending=False).head(top_n).index
+
+        # Unique label assignment logic
+        labels = {}
+        used = set()
+        for comm_id in top_diff:
+            texts = [self.tweets.iloc[i]['text'] for i, cid in self.partition.items() if cid == comm_id]
+            label = self._extract_community_label(comm_id, texts)
+            base = label
+            suffix = 1
+            while label in used:
+                label = f"{base} ({suffix})"
+                suffix += 1
+            used.add(label)
+            labels[comm_id] = label
+
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        heatmap_data = pd.DataFrame({
+            'Increase in Tweets': mean_sig[top_diff] - mean_non_sig[top_diff],
+            'label': [labels.get(i, f"Comm {i}") for i in top_diff]
+        }).set_index('label').sort_values('Increase in Tweets', ascending=False)
+
+        plt.figure(figsize=(12, 8))
+        ax = sns.heatmap(
+            heatmap_data,
+            annot=True,
+            cmap='YlGnBu',
+            linewidths=0.5,
+            cbar_kws={'label': 'Avg Tweet Count Diff (Sig - Non-Sig)'}
+        )
+        ax.set_title("Top Communities with Increased Tweets Before Drastic Stock Movements", fontsize=TITLE_FONT_SIZE)
+        plt.yticks(rotation=0)
+        plt.tight_layout()
         plt.show()
 
 
@@ -265,6 +370,10 @@ def main():
     builder.merge_similar_communities()
     builder.visualize_communities()
     builder.visualize_merged_community_graph()
+
+    builder.visualize_community_wordcloud()
+
+    builder.analyze_community_stock_relationship(stock)
 
 if __name__ == '__main__':
     main()
