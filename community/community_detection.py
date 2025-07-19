@@ -350,6 +350,93 @@ class TweetGraphBuilder:
         plt.tight_layout()
         plt.show()
 
+    def compute_modularity(self):
+        if self.graph is None or not hasattr(self, 'partition'):
+            raise ValueError("Graph not built or communities not detected.")
+
+        modularity_score = community_louvain.modularity(self.partition, self.graph)
+        print(f"Modularity Score: {modularity_score:.4f}")
+        return modularity_score
+
+
+    def plot_community_timeline_overlay(self, stock, top_n=5):
+        if self.graph is None or not hasattr(self, 'partition'):
+            raise ValueError("Graph not built or communities not detected.")
+
+        self.tweets['date'] = pd.to_datetime(self.tweets['timestamp']).dt.date
+        self.tweets['community'] = self.tweets.index.map(self.partition)
+
+        stock = stock.copy()
+        stock['return'] = stock['Close'].pct_change(periods=3)
+        stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
+        stock['date'] = pd.to_datetime(stock['Date']).dt.date
+
+        tweet_counts = self.tweets.groupby(['date', 'community']).size().unstack(fill_value=0)
+        tweet_counts = tweet_counts.shift(1).dropna()
+
+        merged = pd.merge(tweet_counts, stock[['date', 'Close']], on='date', how='inner')
+
+        # Compute impact score to select top communities
+        stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
+        sig_days = merged[merged['date'].isin(stock[stock['significant_change']]['date'])]
+        non_sig_days = merged[~merged['date'].isin(stock[stock['significant_change']]['date'])]
+
+        mean_sig = sig_days.drop(columns=['date', 'Close']).mean()
+        mean_non_sig = non_sig_days.drop(columns=['date', 'Close']).mean()
+        impact = (mean_sig - mean_non_sig).abs().sort_values(ascending=False)
+
+        top_communities = impact.head(top_n).index
+
+        # Build plot
+        fig, ax1 = plt.subplots(figsize=(14, 6))
+
+        ax1.plot(merged['date'], merged['Close'], color='black', label='Stock Price', linewidth=2)
+        ax1.set_ylabel("Stock Price")
+        ax1.set_xlabel("Date")
+        ax1.set_title("Stock Price with Tweet Volume Overlay for Top Communities", fontsize=TITLE_FONT_SIZE + 2)
+
+        ax2 = ax1.twinx()
+        # Use a high-contrast and colorblind-friendly palette
+        colors = sns.color_palette("tab10", len(top_communities)) if len(top_communities) <= 10 else sns.color_palette("tab20", len(top_communities))
+        for i, comm_id in enumerate(top_communities):
+            label = self._extract_community_label(comm_id, [self.tweets.iloc[j]['text'] for j, cid in self.partition.items() if cid == comm_id])
+            ax2.plot(merged['date'], merged[comm_id], label=label, color=colors[i], linestyle='--')
+
+        ax2.set_ylabel("Tweet Count")
+        lines, labels = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines + lines2, labels + labels2, loc='upper left')
+        plt.tight_layout()
+        plt.show()
+
+    def plot_top_communities_by_tweet_count(self, top_n=10):
+        if self.graph is None or not hasattr(self, 'partition'):
+            raise ValueError("Graph not built or communities not detected.")
+
+        self.tweets['community'] = self.tweets.index.map(self.partition)
+        tweet_counts = self.tweets['community'].value_counts().head(top_n)
+
+        labels = []
+        used = set()
+        for comm_id in tweet_counts.index:
+            texts = [self.tweets.iloc[i]['text'] for i, cid in self.partition.items() if cid == comm_id]
+            label = self._extract_community_label(comm_id, texts)
+            base = label
+            suffix = 1
+            while label in used:
+                label = f"{base} ({suffix})"
+                suffix += 1
+            used.add(label)
+            labels.append(label)
+
+        plt.figure(figsize=(12, 6))
+        sns.barplot(x=tweet_counts.values, y=labels, palette="viridis")
+        plt.xlabel("Tweet Count")
+        plt.ylabel("Community")
+        plt.title("Top Communities by Tweet Count", fontsize=TITLE_FONT_SIZE)
+        plt.tight_layout()
+        plt.show()
+
 
 def load_data():
     tweets = pd.read_csv('../data/clean/clean_musk_tweets.csv')
@@ -374,6 +461,12 @@ def main():
     builder.visualize_community_wordcloud()
 
     builder.analyze_community_stock_relationship(stock)
+
+    builder.plot_community_timeline_overlay(stock)
+
+    builder.plot_top_communities_by_tweet_count()
+
+    builder.compute_modularity()
 
 if __name__ == '__main__':
     main()
