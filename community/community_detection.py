@@ -177,7 +177,7 @@ class TweetGraphBuilder:
         self.partition_label = "merged"
         self.cache.save_partition(self.partition, "merged")
 
-    def visualize_communities(self):
+    def visualize_communities(self, title):
         if self.graph is None or not hasattr(self, 'partition'):
             raise ValueError("Graph not built or communities not detected.")
 
@@ -189,8 +189,7 @@ class TweetGraphBuilder:
 
         plt.figure(figsize=(10, 8))
         nx.draw_networkx_nodes(self.graph, pos, node_color=colors, node_size=15, alpha=0.8)
-        method_name = 'Louvain' if 'louvain' in self.partition_label.lower() else 'Label Propagation'
-        plt.title(f"{method_name} Community Detection with TSNE Layout ({len(set(self.partition.values()))} communities)", fontsize=TITLE_FONT_SIZE)
+        plt.title(title, fontsize=TITLE_FONT_SIZE)
         plt.show()
 
     def visualize_merged_community_graph(self):
@@ -256,7 +255,10 @@ class TweetGraphBuilder:
         community_labels = {}
         for comm_id, texts in community_texts.items():
             label = self._extract_community_label(comm_id, texts)
-            community_labels[label] = len(texts)
+            if label in community_labels:
+                community_labels[label] += len(texts)
+            else:
+                community_labels[label] = len(texts)
 
         wordcloud = WordCloud(width=WORDCLOUD_WIDTH, height=WORDCLOUD_HEIGHT, background_color=WORDCLOUD_BACKGROUND_COLOR, colormap=WORDCLOUD_COLORMAP)
         wordcloud.generate_from_frequencies(community_labels)
@@ -452,10 +454,10 @@ def main():
     builder.visualize_graph()
 
     builder.detect_communities_louvain()
-    builder.visualize_communities()
+    builder.visualize_communities(f"Community Detection with TSNE Layout ({len(set(builder.partition.values()))} communities)")
 
     builder.merge_similar_communities()
-    builder.visualize_communities()
+    builder.visualize_communities(f"Merged Communities ({len(set(builder.partition.values()))} communities)")
     builder.visualize_merged_community_graph()
 
     builder.visualize_community_wordcloud()
