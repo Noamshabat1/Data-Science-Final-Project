@@ -1,171 +1,226 @@
-# build_full_model_data.py
+"""
+build_full_model_data.py
+────────────────────────
+Builds a daily modelling dataset that joins:
 
-import os
+  • Tesla stock prices  (Data/clean/clean_stock.csv)
+  • Elon Musk tweets    (Data/clean/clean_musk_tweets.csv)
+  • Elon Musk retweets  (Data/clean/clean_musk_retweets.csv)
+
+Features added:
+  • Technical indicators (MAs, volatility, next‑day return)
+  • Sentiment + engagement aggregates for tweets & retweets
+  • TF‑IDF summary (top‑5 weight sum, keywords, ±1‑day lag/lead)
+
+Config flags let you:
+  · DROP_MISSING_ROWS    – drop rows missing look‑backs or target
+  · DROP_NO_SOCIAL_ROWS  – drop days without tweets & retweets
+  · DROP_OHLCV_COLUMNS   – drop raw OHLCV columns after feature calc
+
+Usage (from project root):
+    $ python model/build_full_model_data.py
+"""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFIG FLAGS – tweak as required
+# ──────────────────────────────────────────────────────────────────────────────
+DROP_MISSING_ROWS = True  # drop rows lacking price_ma_5, price_ma_10, or next_day_pct_change
+DROP_NO_SOCIAL_ROWS = False  # drop rows with zero tweets AND zero retweets
+DROP_OHLCV_COLUMNS = True  # drop Open, High, Low, Price, Volume from output
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Imports
+# ──────────────────────────────────────────────────────────────────────────────
 import re
+from pathlib import Path
 import pandas as pd
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper functions
+# ──────────────────────────────────────────────────────────────────────────────
 def clean_text(text: str) -> str:
-    """Remove URLs, mentions, hashtags, normalize whitespace, and drop literal 'nan' tokens."""
-    if not text or text.lower() == 'nan':
-        return ''
-    text = re.sub(r'http\S+', '', text)
-    text = re.sub(r'@\w+', '', text)
-    text = re.sub(r'#', '', text)
-    text = re.sub(r'\bnan\b', '', text, flags=re.IGNORECASE)
-    return re.sub(r'\s+', ' ', text).strip()
+    """Strip URLs, @mentions, '#', literal 'nan', collapse whitespace."""
+    if not isinstance(text, str) or text.lower() == "nan":
+        return ""
+    text = re.sub(r"http\S+", "", text)  # URLs
+    text = re.sub(r"@\w+", "", text)  # mentions
+    text = re.sub(r"#", "", text)  # keep word, drop '#'
+    text = re.sub(r"\bnan\b", "", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def load_and_engineer_stock(project_root: str) -> pd.DataFrame:
-    """Load stock data and compute returns & technical indicators."""
-    path = os.path.join(project_root, 'data', 'clean', 'clean_stock.csv')
-    df = pd.read_csv(path, parse_dates=['Date'])
-    df['date'] = df['Date'].dt.date
-    df['next_day_pct_change'] = df['Close'].pct_change().shift(-1)*1000
-    df['close_price_5d_moving_average'] = df['Close'].rolling(5).mean()
-    df['close_price_10d_moving_average'] = df['Close'].rolling(10).mean()
-    df['return_5d_volatility'] = df['Close'].pct_change().rolling(5).std()
-    return df[[
-        'date', 'Open', 'High', 'Low', 'Close', 'Volume',
-        'next_day_pct_change',
-        'close_price_5d_moving_average',
-        'close_price_10d_moving_average',
-        'return_5d_volatility'
-    ]]
-
-def process_and_aggregate_tweets(project_root: str) -> pd.DataFrame:
-    """Load tweets, compute sentiment/engagement, aggregate daily, mark tweet boundaries."""
-    path = os.path.join(project_root, 'data', 'processed', 'musk_tweets.csv')
-    tweets = pd.read_csv(path, parse_dates=['timestamp'])
-
-    # 1) Turn real NaNs into empty strings
-    tweets['text'] = tweets['text'].fillna('')
-
-    # 2) Clean text & compute sentiment
-    tweets['clean_text'] = tweets['text'].astype(str).apply(clean_text)
-    tweets['text_length'] = tweets['clean_text'].str.len()
-    nltk.download('vader_lexicon', quiet=True)
+def _sentimentize(df: pd.DataFrame, col: str) -> pd.Series:
+    """Vectorised VADER compound sentiment score."""
+    nltk.download("vader_lexicon", quiet=True)
     sia = SentimentIntensityAnalyzer()
-    tweets['sentiment'] = tweets['clean_text'].apply(lambda t: sia.polarity_scores(t)['compound'])
+    return df[col].apply(lambda t: sia.polarity_scores(t)["compound"])
 
-    # 3) Engagement counts
-    for col in ['retweetCount', 'replyCount', 'likeCount', 'quoteCount', 'viewCount', 'bookmarkCount']:
-        if col in tweets.columns:
-            tweets[col] = pd.to_numeric(tweets[col], errors='coerce').fillna(0).astype(int)
 
-    # 4) Date & time buckets
-    tweets['date'] = tweets['timestamp'].dt.date
-    tweets['hour'] = tweets['timestamp'].dt.hour
-    tweets['time_bucket'] = tweets['hour'].apply(
-        lambda h: 'morning' if h < 12 else ('afternoon' if h < 18 else 'evening')
-    )
-
-    # 5) Numeric aggregates
-    agg = tweets.groupby('date').agg(
-        tweet_count=('clean_text', 'count'),
-        tweet_sentiment_mean=('sentiment', 'mean'),
-        tweet_sentiment_std=('sentiment', 'std'),
-        median_text_length=('text_length', 'median'),
-        std_text_length=('text_length', 'std'),
-        sum_retweets=('retweetCount', 'sum'),
-        sum_replies=('replyCount', 'sum'),
-        sum_likes=('likeCount', 'sum'),
-        sum_quotes=('quoteCount', 'sum'),
-        sum_views=('viewCount', 'sum'),
-        sum_bookmarks=('bookmarkCount', 'sum')
+def _aggregate_posts(df: pd.DataFrame, date_col: str = "timestamp") -> pd.DataFrame:
+    """Aggregate tweets/retweets at daily granularity."""
+    df["date"] = df[date_col].dt.date
+    return df.groupby("date").agg(
+        post_count=(date_col, "size"),
+        sentiment_mean=("sentiment", "mean"),
+        sentiment_std=("sentiment", "std"),
+        median_len=("text_len", "median"),
+        std_len=("text_len", "std"),
+        sum_retweets=("retweetCount", "sum"),
+        sum_replies=("replyCount", "sum"),
+        sum_likes=("likeCount", "sum"),
+        sum_quotes=("quoteCount", "sum"),
+        sum_views=("viewCount", "sum"),
+        sum_bookmarks=("bookmarkCount", "sum"),
+        all_posts=("clean_text", lambda texts: " <SEP> ".join(texts)),
     ).reset_index()
 
-    # 6) Time-of-day counts
-    tod = tweets.groupby(['date', 'time_bucket']).size().unstack(fill_value=0).reset_index()
-    for b in ['morning', 'afternoon', 'evening']:
-        if b not in tod.columns:
-            tod[b] = 0
-    tod = tod.rename(columns={
-        'morning': 'count_morning',
-        'afternoon': 'count_afternoon',
-        'evening': 'count_evening'
-    })
 
-    # 7) Concatenate all posts with explicit separator
-    daily_text = tweets.groupby('date').agg(
-        all_posts=('clean_text', lambda texts: ' <TWEET_SEP> '.join(texts))
-    ).reset_index()
+# ──────────────────────────────────────────────────────────────────────────────
+# Stock loader / engineering
+# ──────────────────────────────────────────────────────────────────────────────
+def load_and_engineer_stock(project_root: Path) -> pd.DataFrame:
+    csv = project_root / "Data" / "clean" / "clean_stock.csv"
+    df = pd.read_csv(csv, parse_dates=["Date"])
 
-    daily = agg.merge(tod, on='date', how='left') \
-        .merge(daily_text, on='date', how='left')
-    daily['all_posts'] = daily['all_posts'].fillna('').astype(str)
-    return daily
+    # Harmonise column names
+    if "Close" in df.columns and "Price" not in df.columns:
+        df = df.rename(columns={"Close": "Price"})
+    if "Price" not in df.columns:
+        raise KeyError(f"{csv} must contain a 'Price' column.")
+
+    df["date"] = df["Date"].dt.date
+    df["next_day_pct_change"] = df["Price"].pct_change().shift(-1) * 100
+    df["price_ma_5"] = df["Price"].rolling(5).mean()
+    df["price_ma_10"] = df["Price"].rolling(10).mean()
+    df["return_vol_5"] = df["Price"].pct_change().rolling(5).std()
+
+    return df[[
+        "date", "Open", "High", "Low", "Price", "Volume",
+        "next_day_pct_change", "price_ma_5", "price_ma_10", "return_vol_5",
+    ]].copy()
 
 
-def add_tfidf_summary(daily_df: pd.DataFrame, top_k: int = 5) -> pd.DataFrame:
-    """
-    Compute TF-IDF summary features:
-      - daily_top5_tfidf_weight_sum: sum of top_k TF-IDF scores
-      - tfidf_top_keywords: comma-separated top_k terms
-      - daily_top5_tfidf_weight_sum_lag1: prior day's sum
-      - daily_top5_tfidf_weight_sum_lead1: next day's sum
+# ──────────────────────────────────────────────────────────────────────────────
+# Tweets & Retweets processors
+# ──────────────────────────────────────────────────────────────────────────────
+def process_and_aggregate_tweets(project_root: Path) -> pd.DataFrame:
+    csv = project_root / "Data" / "clean" / "clean_musk_tweets.csv"
+    tw = pd.read_csv(csv, parse_dates=["timestamp"])
 
-    Empty or placeholder days yield 0.0 and ''.
-    """
-    # Strip any residual literal 'nan' from docs
-    docs = [doc.replace('nan', '').strip() for doc in daily_df['all_posts'].astype(str).tolist()]
+    tw["clean_text"] = tw["text"].fillna("").astype(str).apply(clean_text)
+    tw["text_len"] = tw["clean_text"].str.len()
+    tw["sentiment"] = _sentimentize(tw, "clean_text")
+    return _aggregate_posts(tw)
 
-    vec = TfidfVectorizer(max_features=500, ngram_range=(1, 2), stop_words='english')
-    mat = vec.fit_transform(docs)
+
+def process_and_aggregate_retweets(project_root: Path) -> pd.DataFrame:
+    csv = project_root / "Data" / "clean" / "clean_musk_retweets.csv"
+    rt = pd.read_csv(csv, parse_dates=["timestamp"])
+
+    # Determine RT content column
+    if "tweet" in rt.columns:
+        body_col = "tweet"
+    elif "original_content" in rt.columns:
+        body_col = "original_content"
+    elif "text" in rt.columns:
+        body_col = "text"
+    else:
+        raise KeyError(f"No retweet text column found in {csv}")
+
+    rt["clean_text"] = rt[body_col].fillna("").astype(str).apply(clean_text)
+    rt["text_len"] = rt["clean_text"].str.len()
+    rt["sentiment"] = _sentimentize(rt, "clean_text")
+    return _aggregate_posts(rt)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TF‑IDF summary
+# ──────────────────────────────────────────────────────────────────────────────
+def add_tfidf_summary(df: pd.DataFrame, top_k: int = 5) -> pd.DataFrame:
+    docs = df["all_posts"].fillna("").astype(str).str.replace("nan", "").tolist()
+    vec = TfidfVectorizer(max_features=1000, ngram_range=(1, 2), stop_words="english")
+    mat = vec.fit_transform(docs).toarray()
     feats = vec.get_feature_names_out()
-    arr = mat.toarray()
 
-    sums, keywords = [], []
-    for text, row in zip(docs, arr):
-        if not text:
-            sums.append(0.0)
-            keywords.append('')
+    weight_sums, kws = [], []
+    for row, txt in zip(mat, docs):
+        if not txt.strip():
+            weight_sums.append(0.0);
+            kws.append("")
         else:
             idx = row.argsort()[-top_k:][::-1]
-            sums.append(row[idx].sum())
-            keywords.append(','.join(feats[i] for i in idx))
+            weight_sums.append(row[idx].sum())
+            kws.append(",".join(feats[i] for i in idx))
 
-    df = daily_df.copy()
-    df['daily_top5_tfidf_weight_sum'] = sums
-    df['tfidf_top_keywords'] = keywords
-    df = df.sort_values('date').reset_index(drop=True)
-    df['daily_top5_tfidf_weight_sum_lag1'] = df['daily_top5_tfidf_weight_sum'].shift(1)
-    df['daily_top5_tfidf_weight_sum_lead1'] = df['daily_top5_tfidf_weight_sum'].shift(-1)
-    return df
+    out = df.copy()
+    out["tfidf_top5_weight_sum"] = weight_sums
+    out["tfidf_top_keywords"] = kws
+    out = out.sort_values("date").reset_index(drop=True)
+    out["tfidf_weight_sum_lag1"] = out["tfidf_top5_weight_sum"].shift(1)
+    out["tfidf_weight_sum_lead1"] = out["tfidf_top5_weight_sum"].shift(-1)
+    return out
 
 
-def main():
-    try:
-        script_dir = os.path.dirname(__file__)
-    except NameError:
-        script_dir = os.getcwd()
-    project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+# ──────────────────────────────────────────────────────────────────────────────
+# Pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+def main() -> None:
+    project_root = Path(__file__).resolve().parent.parent  # model/ → project root
 
-    # Flags
-    drop_missing_rows = True  # drop rows missing lookbacks or target
-    drop_no_tweets = False  # drop days without tweets
-
+    # Stock
     stock_df = load_and_engineer_stock(project_root)
-    daily_tweets = process_and_aggregate_tweets(project_root)
-    merged = stock_df.merge(daily_tweets, on='date', how='left')
+
+    # Social aggregates
+    tweets_df = process_and_aggregate_tweets(project_root)
+    retweets_df = process_and_aggregate_retweets(project_root)
+
+    # Combine social metrics
+    daily = tweets_df.merge(
+        retweets_df,
+        on="date",
+        how="outer",
+        suffixes=("_tweet", "_retweet")
+    ).fillna(0)
+
+    daily["all_posts"] = (
+            daily["all_posts_tweet"].astype(str)
+            + " <SEP> "
+            + daily["all_posts_retweet"].astype(str)
+    ).str.strip(" <SEP> ")
+    daily.drop(columns=["all_posts_tweet", "all_posts_retweet"], inplace=True)
+
+    # Merge with stock & add TF‑IDF
+    merged = stock_df.merge(daily, on="date", how="left")
     final_df = add_tfidf_summary(merged, top_k=5)
 
-    if drop_missing_rows:
-        final_df = final_df.dropna(subset=[
-            'next_day_pct_change',
-            'close_price_10d_moving_average'
-        ])
-    if drop_no_tweets:
-        final_df = final_df[final_df['tweet_count'] > 0].copy()
+    # Optional row/column filtering
+    if DROP_MISSING_ROWS:
+        final_df = final_df.dropna(
+            subset=["price_ma_5", "price_ma_10", "next_day_pct_change"]
+        )
+    if DROP_NO_SOCIAL_ROWS:
+        final_df = final_df[
+            (final_df["post_count_tweet"] > 0) | (final_df["post_count_retweet"] > 0)
+            ].copy()
+    if DROP_OHLCV_COLUMNS:
+        final_df = final_df.drop(columns=["Open", "High", "Low", "Price", "Volume"])
 
-    out_dir = os.path.join(project_root, 'data', 'model')
-    os.makedirs(out_dir, exist_ok=True)
-    final_df.to_csv(os.path.join(out_dir, 'model_data_full.csv'), index=False)
-    print("Saved full modeling dataset with TF-IDF summary.")
+    # Save
+    out_dir = project_root / "Data" / "model"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = out_dir / "model_data_full.csv"
+    final_df.to_csv(out_csv, index=False)
+
+    print(
+        f"✅ Saved full modelling dataset to {out_csv} "
+        f"({len(final_df):,} rows, {len(final_df.columns)} columns)"
+    )
 
 
-if __name__ == '__main__':
+# ──────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
     main()

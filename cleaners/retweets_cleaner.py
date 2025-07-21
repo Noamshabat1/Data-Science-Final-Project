@@ -14,8 +14,10 @@ def clean_retweets_data():
     """
 
     # Define file paths
-    input_file = os.path.join("..", "data", "splitted", "musk_retweets.csv")
-    output_file = os.path.join("..", "data", "clean", "clean_musk_retweets.csv")
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+    input_file = os.path.join(project_root, "data", "splitted", "musk_retweets.csv")
+    output_file = os.path.join(project_root, "data", "clean", "clean_musk_retweets.csv")
 
     print("=" * 60)
     print("RETWEETS DATA CLEANER")

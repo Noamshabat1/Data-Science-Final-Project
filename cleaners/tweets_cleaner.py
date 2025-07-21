@@ -12,8 +12,10 @@ def clean_tweets_data():
     """
 
     # Define file paths
-    input_file = os.path.join("..", "data", "splitted", "musk_tweets.csv")
-    output_file = os.path.join("..", "data", "clean", "clean_musk_tweets.csv")
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
+    input_file = os.path.join(project_root, "data", "splitted", "musk_tweets.csv")
+    output_file = os.path.join(project_root, "data", "clean", "clean_musk_tweets.csv")
 
     print("=" * 60)
     print("TWEETS DATA CLEANER")
