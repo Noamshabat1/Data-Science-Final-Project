@@ -5,27 +5,27 @@ import pandas as pd
 def clean_stock_data() -> None:
     script_dir = os.path.dirname(os.path.realpath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
-    input_path = os.path.join(project_root, "data", "original", "tesla_stock_data_2000_2025.csv")
+    input_path = os.path.join(project_root, "data", "original", "tesla_stock.csv")
     output_dir = os.path.join(project_root, "data", "clean")
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "clean_tesla_stock.csv")
 
-    # Read, drop the two non‑data rows
+    # Read and drop only the second row (index 1)
     raw_stock = pd.read_csv(input_path, header=0)
-    clean_stock = raw_stock.drop(index=[0, 1]).reset_index(drop=True)
+    clean_stock = raw_stock.drop(index=[1]).reset_index(drop=True)
 
-    # Rename columns so Date is correct
-    clean_stock.rename(columns={"Price": "Date", "Close": "Price"}, inplace=True)
+    # Drop Adj Close column
+    clean_stock = clean_stock.drop('Adj Close', axis=1)
 
     # Parse Date
     clean_stock["Date"] = pd.to_datetime(clean_stock["Date"]).dt.date
 
     # Convert numeric columns
-    for col in ["Open", "High", "Low", "Price", "Volume"]:
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
         clean_stock[col] = pd.to_numeric(clean_stock[col], errors="coerce")
 
     # Reorder, sort, save
-    clean_stock = (clean_stock[["Date", "Open", "High", "Low", "Price", "Volume"]]
+    clean_stock = (clean_stock[["Date", "Open", "High", "Low", "Close", "Volume"]]
                    .sort_values("Date")
                    .reset_index(drop=True))
     clean_stock.to_csv(output_path, index=False)
