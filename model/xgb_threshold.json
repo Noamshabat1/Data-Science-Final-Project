@@ -1,1 +1,27 @@
-{"tau": 0.5167152881622314}
+{
+  "tau": 0.4867708683013916,
+  "f1_macro": 0.5238095238095238,
+  "f1_pos": 0.5238095238095238,
+  "f1_neg": 0.5238095238095238,
+  "precision_pos": 0.5129533678756477,
+  "recall_pos": 0.5351351351351351,
+  "accuracy": 0.5238095238095238,
+  "ap": 0.4978840773612301,
+  "roc": 0.519072958969332,
+  "best_params": {
+    "objective": "binary:logistic",
+    "eval_metric": "logloss",
+    "tree_method": "hist",
+    "n_jobs": -1,
+    "random_state": 42,
+    "max_depth": 4,
+    "learning_rate": 0.03,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_lambda": 3.0,
+    "reg_alpha": 0.0,
+    "scale_pos_weight": 0.8782849239280774,
+    "n_estimators": 800
+  },
+  "best_val_pr_auc": 0.6581708223453614
+}

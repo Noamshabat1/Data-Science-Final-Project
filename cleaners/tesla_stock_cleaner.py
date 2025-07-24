@@ -8,7 +8,7 @@ def clean_stock_data() -> None:
     input_path = os.path.join(project_root, "data", "original", "tesla_stock_data_2000_2025.csv")
     output_dir = os.path.join(project_root, "data", "clean")
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "clean_stock.csv")
+    output_path = os.path.join(output_dir, "clean_tesla_stock.csv")
 
     # Read, drop the two non‑data rows
     raw_stock = pd.read_csv(input_path, header=0)
