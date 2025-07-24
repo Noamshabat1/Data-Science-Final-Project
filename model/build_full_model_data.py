@@ -20,12 +20,13 @@ Config flags let you:
 Usage (from project root):
     $ python model/build_full_model_data.py
 """
+import numpy as np
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG FLAGS – tweak as required
 # ──────────────────────────────────────────────────────────────────────────────
 DROP_MISSING_ROWS = True  # drop rows lacking price_ma_5, price_ma_10, or next_day_pct_change
-DROP_NO_SOCIAL_ROWS = False  # drop rows with zero tweets AND zero retweets
+DROP_NO_SOCIAL_ROWS = True  # drop rows with zero tweets AND zero retweets
 DROP_OHLCV_COLUMNS = True  # drop Open, High, Low, Price, Volume from output
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,6 +84,14 @@ def _aggregate_posts(df: pd.DataFrame, date_col: str = "timestamp") -> pd.DataFr
 # Stock loader / engineering
 # ──────────────────────────────────────────────────────────────────────────────
 def load_and_engineer_stock(project_root: Path) -> pd.DataFrame:
+    """
+    Load the clean Tesla price file and add:
+        - next‑day % return (target)
+        - 5‑ & 10‑day moving averages
+        - 5‑day return volatility
+        - 0‑day return (today's % change)
+        - 3‑ and 7‑day momentum (% change over window)
+    """
     csv = project_root / "Data" / "clean" / "clean_stock.csv"
     df = pd.read_csv(csv, parse_dates=["Date"])
 
@@ -93,14 +102,23 @@ def load_and_engineer_stock(project_root: Path) -> pd.DataFrame:
         raise KeyError(f"{csv} must contain a 'Price' column.")
 
     df["date"] = df["Date"].dt.date
+
+    # Targets & technicals
     df["next_day_pct_change"] = df["Price"].pct_change().shift(-1) * 100
-    df["price_ma_5"] = df["Price"].rolling(5).mean()
-    df["price_ma_10"] = df["Price"].rolling(10).mean()
-    df["return_vol_5"] = df["Price"].pct_change().rolling(5).std()
+    df["price_ma_5d"] = df["Price"].rolling(5).mean()
+    df["price_ma_10d"] = df["Price"].rolling(10).mean()
+    df["pct_vol_5d"] = df["Price"].pct_change().rolling(5).std()
+
+    # price‑action features
+    df["pct_return_1d"] = df["Price"].pct_change() * 100  # today's return
+    df["pct_return_3d"] = df["Price"].pct_change(3) * 100  # 3‑day momentum
+    df["pct_return_7d"] = df["Price"].pct_change(7) * 100  # 7‑day momentum
 
     return df[[
         "date", "Open", "High", "Low", "Price", "Volume",
-        "next_day_pct_change", "price_ma_5", "price_ma_10", "return_vol_5",
+        "next_day_pct_change",
+        "pct_return_1d", "pct_return_3d", "pct_return_7d",
+        "price_ma_5d", "price_ma_10d", "pct_vol_5d",
     ]].copy()
 
 
@@ -197,15 +215,23 @@ def main() -> None:
     merged = stock_df.merge(daily, on="date", how="left")
     final_df = add_tfidf_summary(merged, top_k=5)
 
+    # Fill values that represent "no social activity"
+    zero_fill_cols = [
+        c for c in final_df.columns
+        if c.startswith(("post_count",  # post_count_tweet / _retweet
+                         "sentiment_mean",  # sentiment_mean_tweet / _retweet
+                         "median_len", "std_len",
+                         "sum_retweets", "sum_replies",
+                         "sum_likes", "sum_quotes",
+                         "sum_views", "sum_bookmarks"))
+    ]
+    final_df[zero_fill_cols] = final_df[zero_fill_cols].fillna(0)
+
     # Optional row/column filtering
     if DROP_MISSING_ROWS:
-        final_df = final_df.dropna(
-            subset=["price_ma_5", "price_ma_10", "next_day_pct_change"]
-        )
+        final_df = final_df.dropna(subset=["price_ma_5d", "price_ma_10d", "next_day_pct_change"])
     if DROP_NO_SOCIAL_ROWS:
-        final_df = final_df[
-            (final_df["post_count_tweet"] > 0) | (final_df["post_count_retweet"] > 0)
-            ].copy()
+        final_df = final_df[(final_df["post_count_tweet"] > 0) | (final_df["post_count_retweet"] > 0)].copy()
     if DROP_OHLCV_COLUMNS:
         final_df = final_df.drop(columns=["Open", "High", "Low", "Price", "Volume"])
 
