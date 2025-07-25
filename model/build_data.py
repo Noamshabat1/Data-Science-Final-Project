@@ -2,9 +2,84 @@ import pandas as pd
 import os
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # Get the project root directory
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def add_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add sentiment analysis features for the text data.
+    Returns sentiment scores as new columns.
+    """
+    print("\nGenerating sentiment features...")
+    
+    # Initialize VADER sentiment analyzer
+    analyzer = SentimentIntensityAnalyzer()
+    
+    # Get text data
+    texts = df["all_posts"].fillna("").astype(str).tolist()
+    
+    # Calculate sentiment scores for each day's posts
+    sentiment_scores = []
+    for text in texts:
+        scores = analyzer.polarity_scores(text)
+        sentiment_scores.append(scores)
+    
+    # Convert to DataFrame for easier handling
+    sentiment_df = pd.DataFrame(sentiment_scores)
+    
+    # Add sentiment columns to the main dataframe
+    df['sentiment_compound'] = sentiment_df['compound']  # Overall sentiment (-1 to +1)
+    df['sentiment_positive'] = sentiment_df['pos']       # Positive sentiment (0 to 1)
+    df['sentiment_negative'] = sentiment_df['neg']       # Negative sentiment (0 to 1)
+    df['sentiment_neutral'] = sentiment_df['neu']        # Neutral sentiment (0 to 1)
+    
+    print(f"Added 4 sentiment features:")
+    print(f"  - Compound sentiment (overall): {df['sentiment_compound'].mean():.3f} ± {df['sentiment_compound'].std():.3f}")
+    print(f"  - Positive sentiment: {df['sentiment_positive'].mean():.3f} ± {df['sentiment_positive'].std():.3f}")
+    print(f"  - Negative sentiment: {df['sentiment_negative'].mean():.3f} ± {df['sentiment_negative'].std():.3f}")
+    print(f"  - Neutral sentiment: {df['sentiment_neutral'].mean():.3f} ± {df['sentiment_neutral'].std():.3f}")
+    
+    return df
+
+
+def add_tfidf_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add TF-IDF features for the text data.
+    Returns reduced TF-IDF values as new columns.
+    """
+    print("\nGenerating TF-IDF features...")
+    
+    # Get text data
+    texts = df["all_posts"].fillna("").astype(str).tolist()
+    
+    # Create TF-IDF vectorizer
+    tfidf = TfidfVectorizer(
+        max_features=1000,  # Limit vocabulary size
+        ngram_range=(1, 2),  # Use unigrams and bigrams
+        stop_words='english',  # Remove common English stop words
+        min_df=2,  # Ignore terms that appear in less than 2 documents
+        max_df=0.95  # Ignore terms that appear in more than 95% of documents
+    )
+    
+    # Fit and transform the texts
+    tfidf_matrix = tfidf.fit_transform(texts)
+    
+    # Use SVD to reduce dimensionality (similar to embeddings)
+    n_components = 10  # Use 10 TF-IDF components
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    tfidf_reduced = svd.fit_transform(tfidf_matrix)
+    
+    # Add TF-IDF dimensions as new columns
+    for i in range(n_components):
+        df[f'tfidf_{i}'] = tfidf_reduced[:, i]
+    
+    print(f"Added {n_components} TF-IDF components (explained variance: {svd.explained_variance_ratio_.sum():.3f})")
+    return df
+
 
 def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -111,10 +186,16 @@ def load_and_merge_data():
     # Drop timestamp column
     merged_df = merged_df.drop('timestamp', axis=1)
 
+    # Apply sentiment analysis
+    merged_df = add_sentiment_features(merged_df)
+    
+    # Apply TF-IDF features
+    merged_df = add_tfidf_features(merged_df)
+    
     # Apply embeddings
     merged_df = add_embeddings(merged_df)
 
-    # Drop all_posts column after embedding
+    # Drop all_posts column after feature extraction
     merged_df = merged_df.drop('all_posts', axis=1)
 
     # Create model data directory if it doesn't exist
