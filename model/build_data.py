@@ -11,15 +11,28 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def add_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add sentiment analysis features for the text data.
-    Returns sentiment scores as new columns.
+    Add sentiment analysis features to the dataset using VADER sentiment analyzer.
+    
+    This function analyzes the emotional tone of social media posts using VADER 
+    (Valence Aware Dictionary and sEntiment Reasoner) to generate sentiment scores.
+    
+    Args:
+        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
+        
+    Returns:
+        pd.DataFrame: Original dataframe with added sentiment_compound column containing
+                     sentiment scores ranging from -1 (most negative) to +1 (most positive)
+                     
+    Example:
+        >>> df_with_sentiment = add_sentiment_features(social_media_df)
+        >>> print(df_with_sentiment['sentiment_compound'].describe())
     """
     print("\nGenerating sentiment features...")
     
     # Initialize VADER sentiment analyzer
     analyzer = SentimentIntensityAnalyzer()
     
-    # Get text data
+    # Get text data and handle missing values
     texts = df["all_posts"].fillna("").astype(str).tolist()
     
     # Calculate sentiment scores for each day's posts
@@ -31,45 +44,58 @@ def add_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
     # Convert to DataFrame for easier handling
     sentiment_df = pd.DataFrame(sentiment_scores)
     
-    # Add sentiment columns to the main dataframe
+    # Add only compound sentiment column to the main dataframe
     df['sentiment_compound'] = sentiment_df['compound']  # Overall sentiment (-1 to +1)
-    df['sentiment_positive'] = sentiment_df['pos']       # Positive sentiment (0 to 1)
-    df['sentiment_negative'] = sentiment_df['neg']       # Negative sentiment (0 to 1)
-    df['sentiment_neutral'] = sentiment_df['neu']        # Neutral sentiment (0 to 1)
     
-    print(f"Added 4 sentiment features:")
+    print(f"Added 1 sentiment feature:")
     print(f"  - Compound sentiment (overall): {df['sentiment_compound'].mean():.3f} ± {df['sentiment_compound'].std():.3f}")
-    print(f"  - Positive sentiment: {df['sentiment_positive'].mean():.3f} ± {df['sentiment_positive'].std():.3f}")
-    print(f"  - Negative sentiment: {df['sentiment_negative'].mean():.3f} ± {df['sentiment_negative'].std():.3f}")
-    print(f"  - Neutral sentiment: {df['sentiment_neutral'].mean():.3f} ± {df['sentiment_neutral'].std():.3f}")
     
     return df
 
 
 def add_tfidf_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add TF-IDF features for the text data.
-    Returns reduced TF-IDF values as new columns.
+    Add TF-IDF (Term Frequency-Inverse Document Frequency) features to capture text content patterns.
+    
+    This function converts text data into numerical features using TF-IDF vectorization
+    followed by dimensionality reduction using Truncated SVD to create compact representations
+    of text content that can be used in machine learning models.
+    
+    Args:
+        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
+        
+    Returns:
+        pd.DataFrame: Original dataframe with added tfidf_0 through tfidf_9 columns containing
+                     reduced TF-IDF representations of the text content
+                     
+    Technical Details:
+        - Uses TF-IDF vectorization with max 1000 features, unigrams and bigrams
+        - Removes English stop words and very common/rare terms
+        - Applies Truncated SVD to reduce to 10 dimensions for computational efficiency
+        
+    Example:
+        >>> df_with_tfidf = add_tfidf_features(social_media_df)
+        >>> print([col for col in df_with_tfidf.columns if col.startswith('tfidf_')])
     """
     print("\nGenerating TF-IDF features...")
     
-    # Get text data
+    # Get text data and handle missing values
     texts = df["all_posts"].fillna("").astype(str).tolist()
     
-    # Create TF-IDF vectorizer
+    # Create TF-IDF vectorizer with optimized parameters
     tfidf = TfidfVectorizer(
-        max_features=1000,  # Limit vocabulary size
-        ngram_range=(1, 2),  # Use unigrams and bigrams
+        max_features=1000,  # Limit vocabulary size for computational efficiency
+        ngram_range=(1, 2),  # Use unigrams and bigrams for context
         stop_words='english',  # Remove common English stop words
         min_df=2,  # Ignore terms that appear in less than 2 documents
         max_df=0.95  # Ignore terms that appear in more than 95% of documents
     )
     
-    # Fit and transform the texts
+    # Fit and transform the texts to TF-IDF matrix
     tfidf_matrix = tfidf.fit_transform(texts)
     
-    # Use SVD to reduce dimensionality (similar to embeddings)
-    n_components = 10  # Use 10 TF-IDF components
+    # Use SVD to reduce dimensionality for manageable feature space
+    n_components = 10  # Use 10 TF-IDF components for balance of info and efficiency
     svd = TruncatedSVD(n_components=n_components, random_state=42)
     tfidf_reduced = svd.fit_transform(tfidf_matrix)
     
@@ -83,19 +109,39 @@ def add_tfidf_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add sentence embeddings for the text data.
-    Returns average embedding values as new columns.
+    Add semantic text embeddings using pre-trained sentence transformer model.
+    
+    This function converts text data into dense vector representations that capture
+    semantic meaning using a pre-trained sentence transformer model. These embeddings
+    provide rich semantic features that complement TF-IDF features.
+    
+    Args:
+        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
+        
+    Returns:
+        pd.DataFrame: Original dataframe with added embed_0 through embed_7 columns containing
+                     semantic embedding vectors for the text content
+                     
+    Technical Details:
+        - Uses 'all-MiniLM-L6-v2' model for efficient, high-quality sentence embeddings
+        - Reduces to 8 dimensions from the full embedding space for computational efficiency
+        - Model automatically handles text preprocessing and tokenization
+        
+    Example:
+        >>> df_with_embeddings = add_embeddings(social_media_df)
+        >>> print([col for col in df_with_embeddings.columns if col.startswith('embed_')])
     """
     print("\nGenerating text embeddings...")
-    # Load the model (first time will download it)
+    
+    # Load the sentence transformer model (downloads on first use)
     model = SentenceTransformer('all-MiniLM-L6-v2')
 
-    # Get embeddings for each day's posts
+    # Get embeddings for each day's posts with progress tracking
     texts = df["all_posts"].fillna("").astype(str).tolist()
     embeddings = model.encode(texts, show_progress_bar=True)
 
-    # Add embedding dimensions as new columns
-    n_components = 8  # We'll use top 8 dimensions
+    # Add top embedding dimensions as new columns
+    n_components = 8  # Use top 8 dimensions for balance of information and efficiency
     for i in range(n_components):
         df[f'embed_{i}'] = embeddings[:, i]
 
@@ -103,7 +149,52 @@ def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def load_and_merge_data():
-    """Load and merge all data sources into a single dataset"""
+    """
+    Load, merge, and process all data sources to create the final modeling dataset.
+    
+    This is the main data pipeline function that combines social media data (tweets, retweets, replies)
+    with Tesla stock data, performs feature engineering, and saves the final dataset for modeling.
+    
+    Data Sources:
+        - clean_musk_tweets.csv: Elon Musk's original tweets
+        - clean_musk_retweets.csv: Elon Musk's retweets  
+        - clean_musk_replies.csv: Elon Musk's replies to other tweets
+        - clean_tesla_stock.csv: Tesla stock price data
+        
+    Processing Steps:
+        1. Load and standardize social media data formats
+        2. Handle missing values using fillna with appropriate strategies
+        3. Aggregate social media metrics by date (sum engagement metrics, combine text)
+        4. Load and preprocess Tesla stock data with forward/backward filling
+        5. Merge social media and stock data on date
+        6. Generate sentiment features using VADER sentiment analyzer
+        7. Create TF-IDF features for text content analysis
+        8. Generate semantic embeddings using sentence transformers
+        9. Clean and save final dataset
+        
+    Returns:
+        pd.DataFrame: Complete processed dataset with the following feature types:
+            - Social media engagement metrics (6 columns): retweets, replies, likes, quotes, views, bookmarks
+            - Timestamp column for temporal ordering
+            - Target variable: tesla_close (Tesla stock closing price)
+            - Sentiment features (1 column): compound sentiment score
+            - TF-IDF features (10 columns): text content representations
+            - Embedding features (8 columns): semantic text representations
+            
+    Side Effects:
+        - Saves processed dataset to 'data/model/model_data.csv'
+        - Creates model data directory if it doesn't exist
+        - Prints progress and feature statistics during processing
+        
+    Example:
+        >>> merged_data = load_and_merge_data()
+        >>> print(f"Dataset shape: {merged_data.shape}")
+        >>> print(f"Features: {list(merged_data.columns)}")
+        
+    Note:
+        This function expects all input CSV files to be present in the 'data/clean/' directory
+        and will raise FileNotFoundError if any required files are missing.
+    """
     # Load the CSV files using absolute paths
     replies_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_musk_replies.csv'))
     retweets_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_musk_retweets.csv'))
@@ -183,8 +274,8 @@ def load_and_merge_data():
     # Sort by timestamp
     merged_df = merged_df.sort_values('timestamp')
 
-    # Drop timestamp column
-    merged_df = merged_df.drop('timestamp', axis=1)
+    # Keep timestamp for plotting purposes, but it will be removed during model training
+    # merged_df = merged_df.drop('timestamp', axis=1)  # Comment out this line
 
     # Apply sentiment analysis
     merged_df = add_sentiment_features(merged_df)
