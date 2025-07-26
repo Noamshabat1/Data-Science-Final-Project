@@ -38,6 +38,14 @@ def clean_replies():
     # Save cleaned data
     df.to_csv(output_file, index=False)
     print(f"Saved {len(df)} cleaned rows to {output_file}")
+    
+    return {
+        'initial_count': len(pd.read_csv(input_file)),
+        'duplicates_removed': duplicates_removed,
+        'empty_text_removed': empty_text_removed,
+        'final_count': len(df),
+        'retention_rate': len(df) / len(pd.read_csv(input_file)) * 100
+    }
 
 
 if __name__ == "__main__":

@@ -173,6 +173,18 @@ def clean_retweets_data():
 
     except Exception as e:
         print(f"❌ Error saving file: {e}")
+        return None
+    
+    return {
+        'initial_count': initial_count,
+        'removed_empty': removed_empty,
+        'removed_unparseable': removed_unparseable,
+        'removed_duplicates': removed_duplicates,
+        'removed_non_alpha': removed_non_alpha,
+        'removed_short': removed_short,
+        'final_count': len(df_clean),
+        'retention_rate': len(df_clean) / initial_count * 100
+    }
 
 
 if __name__ == "__main__":

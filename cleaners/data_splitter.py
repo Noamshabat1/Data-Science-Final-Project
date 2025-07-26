@@ -128,6 +128,13 @@ def main_data_splitter():
         len(replies), len(replies) / total * 100,
         len(originals), len(originals) / total * 100,
     )
+    
+    return {
+        'total': total,
+        'retweets': len(retweets),
+        'replies': len(replies),
+        'originals': len(originals)
+    }
 
 
 if __name__ == "__main__":
