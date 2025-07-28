@@ -39,7 +39,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "model", "output")
 
 
-# ───────────────────── Data I/O ─────────────────────────────────────────────
+# ───────────────────── data I/O ─────────────────────────────────────────────
 
 
 def load_and_prepare_data() -> pd.DataFrame:

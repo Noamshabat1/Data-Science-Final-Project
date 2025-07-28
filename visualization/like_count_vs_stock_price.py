@@ -2,8 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Load data
-stock = pd.read_csv('Data/clean/clean_tesla_stock.csv', parse_dates=['Date'])
-tweets = pd.read_csv('Data/clean/clean_musk_tweets.csv', parse_dates=['timestamp'])
+stock = pd.read_csv('data/clean/clean_tesla_stock.csv', parse_dates=['Date'])
+tweets = pd.read_csv('data/clean/clean_musk_tweets.csv', parse_dates=['timestamp'])
 
 # Prepare tweets: aggregate by day
 tweets['date'] = tweets['timestamp'].dt.date

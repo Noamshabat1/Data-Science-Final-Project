@@ -145,7 +145,7 @@ def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
 # ───────────────────── reporting figure helper ───────────────────────
 def create_data_overview_plot(df: pd.DataFrame, save_to: Path) -> None:
     """
-    4‑panel Figure1– Data‑processing overview.
+    4‑panel Figure1– data‑processing overview.
 
     Panels: (A) engagement mix – log‑scaled,
             (B) sentiment histogram,
@@ -187,7 +187,7 @@ def create_data_overview_plot(df: pd.DataFrame, save_to: Path) -> None:
     ax3.set_ylabel("Mean abs value")
     ax3.tick_params(axis="x", rotation=35)
 
-    fig.suptitle("Figure 1 – Data‑processing overview", fontsize=14, y=0.98)
+    fig.suptitle("Figure 1 – data‑processing overview", fontsize=14, y=0.98)
     fig.tight_layout()
     fig.subplots_adjust(top=0.9)
     fig.savefig(save_to, dpi=300)

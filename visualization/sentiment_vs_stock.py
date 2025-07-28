@@ -5,7 +5,7 @@ from pathlib import Path
 
 # --- Configuration ---
 # Define the path to your final dataset
-DATA_FILE = Path(__file__).resolve().parents[1] / "Data/model/model_data_full.csv"
+DATA_FILE = Path(__file__).resolve().parents[1] / "data/model/model_data_full.csv"
 # Define where to save the plot
 OUTPUT_PLOT_FILE = Path(__file__).resolve().parent / "sentiment_vs_stock_plot.png"
 
@@ -19,7 +19,7 @@ def plot_sentiment_vs_stock(data_path: Path, output_path: Path):
         output_path: Path to save the generated plot image.
     """
     if not data_path.exists():
-        print(f"❌ Error: Data file not found at {data_path}")
+        print(f"❌ Error: data file not found at {data_path}")
         print("Please run the `model/build_full_model_data.py` script first.")
         return
 

@@ -1061,10 +1061,10 @@ def main():
     and comprehensive evaluation.
     
     Pipeline Steps:
-        1. Data Loading: Load preprocessed dataset with all engineered features
+        1. data Loading: Load preprocessed dataset with all engineered features
         2. Feature/Target Separation: Extract features, target, and timestamps
         3. Train/Test Split: Random 80/20 split preserving timestamps
-        4. Data Augmentation: Apply SMOTE regression for sample diversity
+        4. data Augmentation: Apply SMOTE regression for sample diversity
         5. Preprocessing: Optimized target normalization only
         6. Model Training: Train optimized XGBoost, Random Forest, and SVR baseline
         7. Evaluation: Comprehensive performance metrics calculation

@@ -22,7 +22,7 @@ def main():
         'retweets': retweets_stats,
     }
     
-    print("\nData cleaning completed. Generating visualizations...")
+    print("\ndata cleaning completed. Generating visualizations...")
     
     # Generate visualizations
     try:

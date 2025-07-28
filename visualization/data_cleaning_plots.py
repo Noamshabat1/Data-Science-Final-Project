@@ -69,9 +69,9 @@ def plot_data_flow_bar_chart(stats):
         ax.text(i, height + max(initial_counts) * 0.02, f'{rate:.1f}%', 
                 ha='center', va='bottom', fontweight='bold')
     
-    ax.set_xlabel('Data Processing Steps')
+    ax.set_xlabel('data Processing Steps')
     ax.set_ylabel('Number of Records')
-    ax.set_title('Data Flow Through Cleaning Pipeline\n(Retention rates shown above bars)', 
+    ax.set_title('data Flow Through Cleaning Pipeline\n(Retention rates shown above bars)',
                  fontsize=14, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(categories, rotation=45, ha='right')
@@ -84,7 +84,7 @@ def plot_data_flow_bar_chart(stats):
 def plot_removal_reasons(stats):
     """Create subplots showing removal reasons for each data type"""
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Data Removal Breakdown by Type', fontsize=16, fontweight='bold')
+    fig.suptitle('data Removal Breakdown by Type', fontsize=16, fontweight='bold')
     
     # Tweets removal reasons
     if stats['tweets']:
@@ -148,7 +148,7 @@ def plot_removal_reasons(stats):
     if stock_labels:
         bars = ax.bar(stock_labels, stock_retention, color=['#ff6b6b', '#4ecdc4'])
         ax.set_ylabel('Retention Rate (%)')
-        ax.set_title('Stock Data Cleaning Results')
+        ax.set_title('Stock data Cleaning Results')
         ax.set_ylim(0, 100)
         
         # Add value labels on bars
@@ -172,7 +172,7 @@ def plot_summary_statistics(stats):
     # Split statistics
     if stats['split']:
         split_data = stats['split']
-        summary_data.append(['Data Splitting', split_data['total'], 
+        summary_data.append(['data Splitting', split_data['total'],
                            split_data['total'], '100.0%', 'Split into categories'])
         summary_data.append(['├─ Tweets', split_data['total'], 
                            split_data['originals'], 
@@ -202,7 +202,7 @@ def plot_summary_statistics(stats):
     #                            data.get('initial_count', 0),
     #                            data.get('final_count', 0),
     #                            f"{data.get('retention_rate', 0):.1f}%",
-    #                            'Data validation & formatting'])
+    #                            'data validation & formatting'])
     
     # Create table
     columns = ['Processing Step', 'Initial Count', 'Final Count', 'Retention Rate', 'Description']
@@ -232,7 +232,7 @@ def plot_summary_statistics(stats):
         for j in range(len(columns)):
             table[(i+1, j)].set_facecolor(color)
     
-    ax.set_title('Data Cleaning Pipeline Summary', fontsize=16, fontweight='bold', pad=20)
+    ax.set_title('data Cleaning Pipeline Summary', fontsize=16, fontweight='bold', pad=20)
     
     return fig
 
