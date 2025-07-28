@@ -1,315 +1,233 @@
-import pandas as pd
-import os
+"""
+build_data.py
+=============
+
+Merge Elon‑Musk Twitter data with Tesla OHLC and engineer
+sentiment, TF‑IDF and MiniLM‑embedding features.
+Outputs
+-------
+• data/model/model_data.csv
+• data/model/data_overview.png   (Figure1 for the report)
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Final, List
+
 import numpy as np
+import pandas as pd
 from sentence_transformers import SentenceTransformer
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from tqdm.auto import tqdm
 
-# Get the project root directory
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ───────────────────── configuration ────────────────────────────────
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+CLEAN_DIR: Final[Path] = PROJECT_ROOT / "data" / "clean"
+MODEL_DIR: Final[Path] = PROJECT_ROOT / "data" / "model"
 
+NUMERIC_COLS: Final[List[str]] = [
+    "retweetCount", "replyCount", "likeCount",
+    "quoteCount", "viewCount", "bookmarkCount",
+]
+
+TFIDF_MAX_FEAT: Final[int] = 1_000
+TFIDF_SVD_DIM: Final[int] = 10
+EMBED_DIM: Final[int] = 8
+EMBED_BATCH: Final[int] = 256
+EMBED_MODEL: Final[str] = "all-MiniLM-L6-v2"
+
+
+# ───────────────────── helper: social loaders ───────────────────────
+def _load_social(fname: str, *, source: str, text_col: str = "text") -> pd.DataFrame:
+    """
+    Load one cleaned Twitter CSV and harmonise column names.
+
+    Parameters
+    ----------
+    fname : str         Filename in *data/clean/*.
+    source : str        Tag: 'tweets', 'retweets', or 'replies'.
+    text_col : str      Column containing the post text.
+
+    Returns
+    -------
+    pd.DataFrame with *NUMERIC_COLS + timestamp + text + source*.
+    """
+    df = pd.read_csv(CLEAN_DIR / fname, usecols=NUMERIC_COLS + ["timestamp", text_col])
+    df = df.rename(columns={text_col: "text"})
+    df["source"] = source
+    return df
+
+
+def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse raw posts into one row per calendar day.
+
+    * Sums engagement metrics
+    * Concatenates all post texts (chronological, '<SEP>' delimiter)
+    """
+    df[NUMERIC_COLS] = df[NUMERIC_COLS].fillna(0)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["date"] = df["timestamp"].dt.date
+
+    text_blob = (
+        df.groupby("date")["text"]
+        .apply(lambda s: " <SEP> ".join(s.fillna("").astype(str)))
+        .rename("all_posts")
+    )
+    metrics = df.groupby("date")[NUMERIC_COLS].sum()
+
+    out = metrics.join(text_blob).reset_index()
+    out["timestamp"] = pd.to_datetime(out["date"])
+    return out.drop(columns="date")
+
+
+def _merge_stock(social: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align social features with Tesla close price using a backward as‑of merge.
+    """
+    stock = (
+        pd.read_csv(CLEAN_DIR / "clean_tesla_stock.csv", usecols=["Date", "Close"])
+        .rename(columns={"Date": "timestamp", "Close": "tesla_close"})
+    )
+    stock["timestamp"] = pd.to_datetime(stock["timestamp"], errors="coerce")
+    stock = stock.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    merged = pd.merge_asof(social.sort_values("timestamp"), stock, on="timestamp", direction="backward")
+    merged["tesla_close"] = merged["tesla_close"].ffill().bfill()
+    return merged
+
+
+# ───────────────────── feature generators ───────────────────────────
 def add_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add sentiment analysis features to the dataset using VADER sentiment analyzer.
-    
-    This function analyzes the emotional tone of social media posts using VADER 
-    (Valence Aware Dictionary and sEntiment Reasoner) to generate sentiment scores.
-    
-    Args:
-        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
-        
-    Returns:
-        pd.DataFrame: Original dataframe with added sentiment_compound column containing
-                     sentiment scores ranging from -1 (most negative) to +1 (most positive)
-                     
-    Example:
-        >>> df_with_sentiment = add_sentiment_features(social_media_df)
-        >>> print(df_with_sentiment['sentiment_compound'].describe())
-    """
-    print("\nGenerating sentiment features...")
-    
-    # Initialize VADER sentiment analyzer
-    #
-    analyzer = SentimentIntensityAnalyzer()
-    
-    # Get text data and handle missing values
-    texts = df["all_posts"].fillna("").astype(str).tolist()
-    
-    # Calculate sentiment scores for each day's posts
-    sentiment_scores = []
-    for text in texts:
-        scores = analyzer.polarity_scores(text)
-        sentiment_scores.append(scores)
-    
-    # Convert to DataFrame for easier handling
-    sentiment_df = pd.DataFrame(sentiment_scores)
-    
-    # Add only compound sentiment column to the main dataframe
-    df['sentiment_compound'] = sentiment_df['compound']  # Overall sentiment (-1 to +1)
-    
-    print(f"Added 1 sentiment feature:")
-    print(f"  - Compound sentiment (overall): {df['sentiment_compound'].mean():.3f} ± {df['sentiment_compound'].std():.3f}")
-    
+    """VADER compound score (−1 … +1)."""
+    print("· Generating sentiment feature")
+    analyser = SentimentIntensityAnalyzer()
+    df["sentiment_compound"] = df["all_posts"].apply(lambda t: analyser.polarity_scores(str(t))["compound"])
     return df
 
 
 def add_tfidf_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add TF-IDF (Term Frequency-Inverse Document Frequency) features to capture text content patterns.
-    
-    This function converts text data into numerical features using TF-IDF vectorization
-    followed by dimensionality reduction using Truncated SVD to create compact representations
-    of text content that can be used in machine learning models.
-    
-    Args:
-        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
-        
-    Returns:
-        pd.DataFrame: Original dataframe with added tfidf_0 through tfidf_9 columns containing
-                     reduced TF-IDF representations of the text content
-                     
-    Technical Details:
-        - Uses TF-IDF vectorization with max 1000 features, unigrams and bigrams
-        - Removes English stop words and very common/rare terms
-        - Applies Truncated SVD to reduce to 10 dimensions for computational efficiency
-        
-    Example:
-        >>> df_with_tfidf = add_tfidf_features(social_media_df)
-        >>> print([col for col in df_with_tfidf.columns if col.startswith('tfidf_')])
-    """
-    print("\nGenerating TF-IDF features...")
-    
-    # Get text data and handle missing values
-    texts = df["all_posts"].fillna("").astype(str).tolist()
-    
-    # Create TF-IDF vectorizer with optimized parameters
-    tfidf = TfidfVectorizer(
-        max_features=1000,  # Limit vocabulary size for computational efficiency
-        ngram_range=(1, 2),  # Use unigrams and bigrams for context
-        stop_words='english',  # Remove common English stop words
-        min_df=2,  # Ignore terms that appear in less than 2 documents
-        max_df=0.95  # Ignore terms that appear in more than 95% of documents
+    """10‑dim TF‑IDF topic vectors (tfidf_0 … tfidf_9)."""
+    print("· Generating TF‑IDF features")
+    vec = TfidfVectorizer(
+        max_features=TFIDF_MAX_FEAT,
+        ngram_range=(1, 2),
+        stop_words="english",
+        min_df=2,
+        max_df=0.95,
     )
-    
-    # Fit and transform the texts to TF-IDF matrix
-    tfidf_matrix = tfidf.fit_transform(texts)
-    
-    # Use SVD to reduce dimensionality for manageable feature space
-    n_components = 10  # Use 10 TF-IDF components for balance of info and efficiency
-    svd = TruncatedSVD(n_components=n_components, random_state=42)
-    tfidf_reduced = svd.fit_transform(tfidf_matrix)
-    
-    # Add TF-IDF dimensions as new columns
-    for i in range(n_components):
-        df[f'tfidf_{i}'] = tfidf_reduced[:, i]
-    
-    print(f"Added {n_components} TF-IDF components (explained variance: {svd.explained_variance_ratio_.sum():.3f})")
+    matrix = vec.fit_transform(df["all_posts"])
+    svd = TruncatedSVD(TFIDF_SVD_DIM, random_state=42)
+    reduced = svd.fit_transform(matrix)
+    for i in range(TFIDF_SVD_DIM):
+        df[f"tfidf_{i}"] = reduced[:, i]
     return df
 
 
 def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add semantic text embeddings using pre-trained sentence transformer model.
-    
-    This function converts text data into dense vector representations that capture
-    semantic meaning using a pre-trained sentence transformer model. These embeddings
-    provide rich semantic features that complement TF-IDF features.
-    
-    Args:
-        df (pd.DataFrame): Input dataframe containing 'all_posts' column with text data
-        
-    Returns:
-        pd.DataFrame: Original dataframe with added embed_0 through embed_7 columns containing
-                     semantic embedding vectors for the text content
-                     
-    Technical Details:
-        - Uses 'all-MiniLM-L6-v2' model for efficient, high-quality sentence embeddings
-        - Reduces to 8 dimensions from the full embedding space for computational efficiency
-        - Model automatically handles text preprocessing and tokenization
-        
-    Example:
-        >>> df_with_embeddings = add_embeddings(social_media_df)
-        >>> print([col for col in df_with_embeddings.columns if col.startswith('embed_')])
-    """
-    print("\nGenerating text embeddings...")
-    
-    # Load the sentence transformer model (downloads on first use)
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    """8 principal components of MiniLM sentence embeddings."""
+    print("· Generating MiniLM embeddings")
+    model = SentenceTransformer(EMBED_MODEL)
+    embeds = np.empty((len(df), model.get_sentence_embedding_dimension()))
 
-    # Get embeddings for each day's posts with progress tracking
-    texts = df["all_posts"].fillna("").astype(str).tolist()
-    embeddings = model.encode(texts, show_progress_bar=True)
+    for start in tqdm(range(0, len(df), EMBED_BATCH), desc="Embedding"):
+        end = start + EMBED_BATCH
+        embeds[start:end] = model.encode(df["all_posts"].iloc[start:end].tolist(), convert_to_numpy=True)
 
-    # Add top embedding dimensions as new columns
-    n_components = 8  # Use top 8 dimensions for balance of information and efficiency
-    for i in range(n_components):
-        df[f'embed_{i}'] = embeddings[:, i]
-
-    print(f"Added {n_components} embedding dimensions")
+    for i in range(EMBED_DIM):
+        df[f"embed_{i}"] = embeds[:, i]
     return df
 
-def load_and_merge_data():
+
+# ───────────────────── reporting figure helper ───────────────────────
+def create_data_overview_plot(df: pd.DataFrame, save_to: Path) -> None:
     """
-    Load, merge, and process all data sources to create the final modeling dataset.
-    
-    This is the main data pipeline function that combines social media data (tweets, retweets, replies)
-    with Tesla stock data, performs feature engineering, and saves the final dataset for modeling.
-    
-    Data Sources:
-        - clean_musk_tweets.csv: Elon Musk's original tweets
-        - clean_musk_retweets.csv: Elon Musk's retweets  
-        - clean_musk_replies.csv: Elon Musk's replies to other tweets
-        - clean_tesla_stock.csv: Tesla stock price data
-        
-    Processing Steps:
-        1. Load and standardize social media data formats
-        2. Handle missing values using fillna with appropriate strategies
-        3. Aggregate social media metrics by date (sum engagement metrics, combine text)
-        4. Load and preprocess Tesla stock data with forward/backward filling
-        5. Merge social media and stock data on date
-        6. Generate sentiment features using VADER sentiment analyzer
-        7. Create TF-IDF features for text content analysis
-        8. Generate semantic embeddings using sentence transformers
-        9. Clean and save final dataset
-        
-    Returns:
-        pd.DataFrame: Complete processed dataset with the following feature types:
-            - Social media engagement metrics (6 columns): retweets, replies, likes, quotes, views, bookmarks
-            - Timestamp column for temporal ordering
-            - Target variable: tesla_close (Tesla stock closing price)
-            - Sentiment features (1 column): compound sentiment score
-            - TF-IDF features (10 columns): text content representations
-            - Embedding features (8 columns): semantic text representations
-            
-    Side Effects:
-        - Saves processed dataset to 'data/model/model_data.csv'
-        - Creates model data directory if it doesn't exist
-        - Prints progress and feature statistics during processing
-        
-    Example:
-        >>> merged_data = load_and_merge_data()
-        >>> print(f"Dataset shape: {merged_data.shape}")
-        >>> print(f"Features: {list(merged_data.columns)}")
-        
-    Note:
-        This function expects all input CSV files to be present in the 'data/clean/' directory
-        and will raise FileNotFoundError if any required files are missing.
+    4‑panel Figure1– Data‑processing overview.
+
+    Panels: (A) engagement mix – log‑scaled,
+            (B) sentiment histogram,
+            (C) Tesla close price (log‑$),
+            (D) mean |TF‑IDF component|.
     """
-    # Load the CSV files using absolute paths
-    replies_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_musk_replies.csv'))
-    retweets_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_musk_retweets.csv'))
-    tweets_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_musk_tweets.csv'))
-    tesla_df = pd.read_csv(os.path.join(PROJECT_ROOT, 'data/clean/clean_tesla_stock.csv'))
+    import matplotlib.pyplot as plt
 
-    # Common numeric columns to keep
-    numeric_columns = [
-        'retweetCount',
-        'replyCount',
-        'likeCount',
-        'quoteCount',
-        'viewCount',
-        'bookmarkCount'
-    ]
+    mean_counts = df[NUMERIC_COLS].mean()
+    tfidf_cols = [c for c in df.columns if c.startswith("tfidf_")]
+    tfidf_mean = df[tfidf_cols].abs().mean()
 
-    # Add source column to each dataframe
-    replies_df['source'] = 'replies'
-    retweets_df['source'] = 'retweets'
-    tweets_df['source'] = 'tweets'
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    (ax0, ax1), (ax2, ax3) = axes
 
-    # Keep only numeric columns and timestamp
-    replies_data = replies_df[numeric_columns + ['timestamp', 'source', 'text']]
-    retweets_data = retweets_df[numeric_columns + ['timestamp', 'source', 'tweet']]  # using 'tweet' instead of 'text'
-    tweets_data = tweets_df[numeric_columns + ['timestamp', 'source', 'text']]
+    # (A) Engagement mix  –– log‑scaled
+    ax0.bar(mean_counts.index, mean_counts.values, color="tab:orange", alpha=0.75)
+    ax0.set_yscale("log")
+    ax0.set_title("(A) Avg. daily engagement mix (log scale)")
+    ax0.set_ylabel("Mean count (log)")
+    ax0.tick_params(axis="x", rotation=35)
 
-    # Rename 'tweet' to 'text' in retweets data for consistency
-    retweets_data = retweets_data.rename(columns={'tweet': 'text'})
+    # (B) Sentiment histogram
+    ax1.hist(df["sentiment_compound"], bins=30, color="tab:green", alpha=0.75)
+    ax1.set_title("(B) VADER compound distribution")
+    ax1.set_xlabel("Compound score")
+    ax1.set_ylabel("Frequency")
 
-    # Concatenate all dataframes
-    merged_df = pd.concat([replies_data, retweets_data, tweets_data], ignore_index=True)
+    # (C) Tesla close price
+    ax2.plot(df["timestamp"], df["tesla_close"], color="tab:blue")
+    ax2.set_yscale("log")
+    ax2.set_title("(C) Tesla close price (log $)")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Close price ($, log)")
 
-    # Replace NaN values with 0 for numeric columns
-    merged_df[numeric_columns] = merged_df[numeric_columns].fillna(0)
+    # (D) TF‑IDF magnitudes
+    ax3.bar(tfidf_mean.index, tfidf_mean.values, color="tab:purple", alpha=0.8)
+    ax3.set_title("(D) Mean |TF‑IDF component|")
+    ax3.set_ylabel("Mean abs value")
+    ax3.tick_params(axis="x", rotation=35)
 
-    # Convert timestamp to datetime
-    merged_df['timestamp'] = pd.to_datetime(merged_df['timestamp'])
+    fig.suptitle("Figure 1 – Data‑processing overview", fontsize=14, y=0.98)
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.9)
+    fig.savefig(save_to, dpi=300)
+    plt.close()
+    print(f"✔ Saved Figure 1 to {save_to}")
 
-    # Extract date from timestamp for grouping
-    merged_df['date'] = merged_df['timestamp'].dt.date
 
-    # Group text by date before summing numeric values
-    text_by_date = merged_df.groupby('date').agg(
-        all_posts=('text', lambda t: " <SEP> ".join(t.fillna("").astype(str)))
-    ).reset_index()
+# ───────────────────── main pipeline ────────────────────────────────
+def load_and_merge_data() -> pd.DataFrame:
+    """
+    Build feature frame + overview figure, write to disk, return DataFrame.
+    """
+    print("\n=== BUILDING DATASET ===")
 
-    # Group by date and sum numeric values
-    merged_df = merged_df.groupby('date')[numeric_columns].sum().reset_index()
+    tweets = _load_social("clean_musk_tweets.csv", source="tweets")
+    retweets = _load_social("clean_musk_retweets.csv", source="retweets", text_col="tweet")
+    replies = _load_social("clean_musk_replies.csv", source="replies")
 
-    # Merge back the text data
-    merged_df = merged_df.merge(text_by_date, on='date', how='left')
+    social = _aggregate_daily(pd.concat([tweets, retweets, replies], ignore_index=True))
+    merged = _merge_stock(social)
 
-    # Convert date back to datetime for consistency
-    merged_df['timestamp'] = pd.to_datetime(merged_df['date'])
+    merged = add_sentiment_features(merged)
+    merged = add_tfidf_features(merged)
+    merged = add_embeddings(merged)
 
-    # Prepare Tesla stock data
-    tesla_df['Date'] = pd.to_datetime(tesla_df['Date']).dt.date
-    tesla_df = tesla_df[['Date', 'Close']]
-    tesla_df = tesla_df.rename(columns={'Date': 'date', 'Close': 'tesla_close'})
+    # report figure
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    create_data_overview_plot(merged, MODEL_DIR / "data_overview.png")
 
-    # Sort Tesla data by date before forward filling
-    tesla_df = tesla_df.sort_values('date')
-    # Forward fill missing values in Tesla data
-    tesla_df['tesla_close'] = tesla_df['tesla_close'].ffill()
+    # final clean‑up
+    merged.drop(columns="all_posts", inplace=True)
+    assert merged.isna().sum().sum() == 0, "NaNs present after feature creation"
 
-    # Merge with Tesla stock data
-    merged_df = pd.merge(merged_df, tesla_df, on='date', how='left')
+    out_path = MODEL_DIR / "model_data.csv"
+    merged.to_csv(out_path, index=False)
+    print(f"✔ Saved dataset to {out_path}  shape={merged.shape}\n")
+    return merged
 
-    # Forward fill any remaining missing values after merge
-    merged_df['tesla_close'] = merged_df['tesla_close'].ffill()
-    # Backward fill for any remaining NaN values at the beginning
-    merged_df['tesla_close'] = merged_df['tesla_close'].bfill()
 
-    # Drop the date column and keep timestamp
-    merged_df = merged_df.drop('date', axis=1)
-
-    # Sort by timestamp
-    merged_df = merged_df.sort_values('timestamp')
-
-    # Keep timestamp for plotting purposes, but it will be removed during model training
-    # merged_df = merged_df.drop('timestamp', axis=1)  # Comment out this line
-
-    # Apply sentiment analysis
-    merged_df = add_sentiment_features(merged_df)
-    
-    # Apply TF-IDF features
-    merged_df = add_tfidf_features(merged_df)
-    
-    # Apply embeddings
-    merged_df = add_embeddings(merged_df)
-
-    # Drop all_posts column after feature extraction
-    merged_df = merged_df.drop('all_posts', axis=1)
-
-    # Create model data directory if it doesn't exist
-    model_data_dir = os.path.join(PROJECT_ROOT, 'data', 'model')
-    os.makedirs(model_data_dir, exist_ok=True)
-
-    # Save the merged dataframe
-    output_path = os.path.join(model_data_dir, 'model_data.csv')
-    merged_df.to_csv(output_path, index=False)
-    print(f"\nSaved raw merged data to: {output_path}")
-    print("📝 Note: Normalization will be applied during modeling to prevent data leakage")
-
-    return merged_df
-
+# ───────────────────── CLI entry point ───────────────────────────────
 if __name__ == "__main__":
-    merged_data = load_and_merge_data()
-    print(f"Total number of days: {len(merged_data)}")
-    print("\nSample of merged daily data:")
-    print(merged_data.head())
-    print("\nNumeric columns statistics (daily sums):")
-    print(merged_data.describe())
-
-    # Print number of NaN values in each column to verify
-    print("\nNumber of NaN values in each column:")
-    print(merged_data.isna().sum())
+    df_final = load_and_merge_data()
+    print(df_final.head())
