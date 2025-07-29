@@ -1,90 +1,88 @@
-import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
-def convert_day_integers_to_names():
-    """
-    Example of how to convert integer day values (0-6) to day names for plotting.
-    This fixes the issue where plots show integers instead of day names.
-    """
-    
-    # Sample data with integer day values (0-6)
-    # Monday = 0, Tuesday = 1, Wednesday = 2, Thursday = 3, Friday = 4, Saturday = 5, Sunday = 6
-    sample_data = {
-        'day': [0, 1, 2, 3, 4, 5, 6],
-        'count': [10, 15, 12, 18, 20, 8, 5]
-    }
-    
-    df = pd.DataFrame(sample_data)
-    
-    # Method 1: Create a mapping dictionary
-    day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    day_mapping = {i: day_names[i] for i in range(7)}
-    
-    # Method 2: Use pandas day_name() function
-    # This is what should be used when creating the day column
-    # df['day_name'] = pd.to_datetime(df['date']).dt.day_name()
-    
-    # Create the plot with proper day names
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Plot 1: Using integer values (current issue)
-    ax1.bar(df['day'], df['count'], color='red', alpha=0.7)
-    ax1.set_xlabel('Day of Week (Integer)')
-    ax1.set_ylabel('Count')
-    ax1.set_title('Current Issue: Integer Day Values')
-    ax1.set_xticks(df['day'])
-    ax1.set_xticklabels(df['day'])
-    
-    # Plot 2: Using day names (fixed)
-    ax2.bar(range(len(df)), df['count'], color='green', alpha=0.7)
-    ax2.set_xlabel('Day of Week')
-    ax2.set_ylabel('Count')
-    ax2.set_title('Fixed: Day Names')
-    ax2.set_xticks(range(len(df)))
-    ax2.set_xticklabels([day_mapping[i] for i in df['day']], rotation=45, ha='right')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return day_mapping
+day_mapping = {
+    0: 'Monday',
+    1: 'Tuesday',
+    2: 'Wednesday', 
+    3: 'Thursday',
+    4: 'Friday',
+    5: 'Saturday',
+    6: 'Sunday'
+}
 
-def fix_notebook_code():
-    """
-    Code to fix the notebook plotting issue.
-    Replace the existing plotting code with this:
-    """
-    
-    fix_code = """
-# Original problematic code:
-# dow_activity = all_posts.groupby('day_of_week').size()
-# axes[2].bar(dow_activity.index, dow_activity.values, color='orange', alpha=0.7)
+day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-# Fixed code:
-dow_activity = all_posts.groupby('day_of_week').size()
+def convert_day_integers_to_names(df, day_column='day_of_week'):
+    df_fixed = df.copy()
+    df_fixed['day_name'] = df_fixed[day_column].map(day_mapping)
+    df_fixed['day_name'] = pd.Categorical(df_fixed['day_name'], categories=day_order, ordered=True)
+    return df_fixed
 
-# Convert integer day values to day names for the plot
-day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-day_mapping = {i: day_names[i] for i in range(7)}
+def group_and_plot_by_day(df, value_column, plot_title="Activity by Day", save_path=None):
+    try:
+        import matplotlib.pyplot as plt
+        
+        daily_stats = df.groupby('day_name')[value_column].agg(['count', 'mean', 'sum']).reset_index()
+        daily_stats = daily_stats.sort_values('day_name')
+        
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        
+        axes[0].bar(daily_stats['day_name'], daily_stats['count'], color='skyblue', alpha=0.8)
+        axes[0].set_title('Count by Day')
+        axes[0].set_ylabel('Count')
+        plt.setp(axes[0].get_xticklabels(), rotation=45, ha='right')
+        
+        axes[1].bar(daily_stats['day_name'], daily_stats['mean'], color='lightgreen', alpha=0.8) 
+        axes[1].set_title('Average by Day')
+        axes[1].set_ylabel('Average Value')
+        plt.setp(axes[1].get_xticklabels(), rotation=45, ha='right')
+        
+        axes[2].bar(daily_stats['day_name'], daily_stats['sum'], color='lightcoral', alpha=0.8)
+        axes[2].set_title('Total by Day')
+        axes[2].set_ylabel('Total Value')
+        plt.setp(axes[2].get_xticklabels(), rotation=45, ha='right')
+        
+        plt.suptitle(plot_title, fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Plot saved to: {save_path}")
+        
+        plt.show()
+        
+        return daily_stats
+        
+    except ImportError:
+        print("Matplotlib not available. Returning statistics only.")
+        daily_stats = df.groupby('day_name')[value_column].agg(['count', 'mean', 'sum']).reset_index()
+        return daily_stats.sort_values('day_name')
 
-# Create the plot with proper day names
-axes[2].bar(range(len(dow_activity)), dow_activity.values, color='orange', alpha=0.7)
-axes[2].set_xticks(range(len(dow_activity)))
-axes[2].set_xticklabels([day_mapping[i] for i in dow_activity.index], rotation=45, ha='right')
-axes[2].set_xlabel('Day of Week')
-axes[2].set_ylabel('Total Posts')
-axes[2].set_title('Twitter/X Activity by Day of Week', fontsize=14, fontweight='bold')
-"""
+def demonstrate_fix():
+    np.random.seed(42)
+    sample_data = pd.DataFrame({
+        'day_of_week': np.random.randint(0, 7, 200),
+        'likeCount': np.random.normal(15000, 5000, 200),
+        'post_length': np.random.normal(100, 30, 200)
+    })
     
-    print("To fix the notebook, replace the plotting code with:")
-    print(fix_code)
+    print("Original data (with integer days):")
+    print(sample_data.head())
+    print(f"\nday_of_week type: {sample_data['day_of_week'].dtype}")
     
-    return fix_code
+    fixed_data = convert_day_integers_to_names(sample_data)
+    
+    print("\nFixed data (with day names):")
+    print(fixed_data[['day_of_week', 'day_name', 'likeCount']].head())
+    print(f"\nday_name type: {fixed_data['day_name'].dtype}")
+    
+    stats = group_and_plot_by_day(fixed_data, 'likeCount', 
+                                 "Like Count by Day of Week", 
+                                 "fixed_day_plot.png")
+    
+    print("\nDaily statistics:")
+    print(stats)
 
 if __name__ == "__main__":
-    # Demonstrate the fix
-    day_mapping = convert_day_integers_to_names()
-    fix_code = fix_notebook_code()
-    
-    print("\nDay mapping dictionary:")
-    print(day_mapping) 
+    demonstrate_fix() 
