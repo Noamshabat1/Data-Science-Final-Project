@@ -12,7 +12,6 @@ from sklearn.manifold import TSNE
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from itertools import combinations
-from wordcloud import WordCloud
 
 SMALL_COMMUNITY_THRESHOLD = 20
 MERGE_THRESHOLD = 0.3
@@ -35,10 +34,6 @@ SPRING_LAYOUT_SEED = 42
 SPRING_LAYOUT_K = 2.0
 NODE_SIZE_SCALING = 30
 NODE_SIZE_MINIMUM = 10
-WORDCLOUD_WIDTH = 1600
-WORDCLOUD_HEIGHT = 800
-WORDCLOUD_BACKGROUND_COLOR = 'white'
-WORDCLOUD_COLORMAP = 'tab20'
 
 class TweetGraphBuilder:
     def __init__(self, tweets, similarity_threshold=SIMILARITY_THRESHOLD_DEFAULT, top_k=TOP_K_DEFAULT, force_rebuild=False):
@@ -244,31 +239,6 @@ class TweetGraphBuilder:
         plt.axis('off')
         plt.show()
 
-    def visualize_community_wordcloud(self):
-        if self.graph is None or not hasattr(self, 'partition'):
-            raise ValueError("Graph not built or communities not detected.")
-
-        community_texts = {}
-        for node, comm_id in self.partition.items():
-            community_texts.setdefault(comm_id, []).append(self.tweets.iloc[node]['text'])
-
-        community_labels = {}
-        for comm_id, texts in community_texts.items():
-            label = self._extract_community_label(comm_id, texts)
-            if label in community_labels:
-                community_labels[label] += len(texts)
-            else:
-                community_labels[label] = len(texts)
-
-        wordcloud = WordCloud(width=WORDCLOUD_WIDTH, height=WORDCLOUD_HEIGHT, background_color=WORDCLOUD_BACKGROUND_COLOR, colormap=WORDCLOUD_COLORMAP)
-        wordcloud.generate_from_frequencies(community_labels)
-
-        plt.figure(figsize=(16, 8))
-        plt.imshow(wordcloud, interpolation='bilinear')
-        plt.axis('off')
-        plt.title("Community Word Cloud (Label Size Reflects Community Size)", fontsize=TITLE_FONT_SIZE)
-        plt.show()
-
     def _extract_community_label(self, comm_id, texts):
         vectorizer = TfidfVectorizer(
             stop_words=STOP_WORDS,
@@ -315,13 +285,14 @@ class TweetGraphBuilder:
         mean_non_sig = non_sig_days.drop(columns=['significant_change', 'date']).mean()
 
         diff = mean_sig - mean_non_sig
-        top_n = 15
-        top_diff = diff.abs().sort_values(ascending=False).head(top_n).index
-
+        
+        # Get top positive communities directly
+        positive_diff = diff[diff > 0].sort_values(ascending=False).head(14)
+        
         # Unique label assignment logic
         labels = {}
         used = set()
-        for comm_id in top_diff:
+        for comm_id in positive_diff.index:
             texts = [self.tweets.iloc[i]['text'] for i, cid in self.partition.items() if cid == comm_id]
             label = self._extract_community_label(comm_id, texts)
             base = label
@@ -334,21 +305,29 @@ class TweetGraphBuilder:
 
         import seaborn as sns
         import matplotlib.pyplot as plt
-        heatmap_data = pd.DataFrame({
-            'Increase in Tweets': mean_sig[top_diff] - mean_non_sig[top_diff],
-            'label': [labels.get(i, f"Comm {i}") for i in top_diff]
-        }).set_index('label').sort_values('Increase in Tweets', ascending=False)
+        
+        plot_data = pd.DataFrame({
+            'Increase in Tweets': positive_diff,
+            'Community': [labels.get(i, f"Comm {i}") for i in positive_diff.index]
+        }).sort_values('Increase in Tweets', ascending=True)  # ascending for horizontal bar
 
         plt.figure(figsize=(12, 8))
-        ax = sns.heatmap(
-            heatmap_data,
-            annot=True,
-            cmap='YlGnBu',
-            linewidths=0.5,
-            cbar_kws={'label': 'Avg Tweet Count Diff (Sig - Non-Sig)'}
-        )
-        ax.set_title("Top Communities with Increased Tweets Before Drastic Stock Movements", fontsize=TITLE_FONT_SIZE)
-        plt.yticks(rotation=0)
+        bars = plt.barh(plot_data['Community'], plot_data['Increase in Tweets'], 
+                       color='steelblue')
+        
+        plt.xlabel('Average Increase in Tweets Before Significant Stock Days', fontsize=11)
+        plt.title("Communities with Increased Tweet Activity Before Major Stock Movements", fontsize=TITLE_FONT_SIZE)
+        
+        # Add y-axis label on the right
+        ax = plt.gca()
+        ax.yaxis.set_label_position('right')
+        plt.ylabel('Number of Tweets', fontsize=11)
+        
+        # Add value labels on bars
+        for i, (idx, row) in enumerate(plot_data.iterrows()):
+            plt.text(row['Increase in Tweets'] + 0.01, i, f'{row["Increase in Tweets"]:.2f}', 
+                    va='center', fontsize=9)
+        
         plt.tight_layout()
         plt.show()
 
@@ -411,38 +390,15 @@ class TweetGraphBuilder:
         plt.tight_layout()
         plt.show()
 
-    def plot_top_communities_by_tweet_count(self, top_n=10):
-        if self.graph is None or not hasattr(self, 'partition'):
-            raise ValueError("Graph not built or communities not detected.")
-
-        self.tweets['community'] = self.tweets.index.map(self.partition)
-        tweet_counts = self.tweets['community'].value_counts().head(top_n)
-
-        labels = []
-        used = set()
-        for comm_id in tweet_counts.index:
-            texts = [self.tweets.iloc[i]['text'] for i, cid in self.partition.items() if cid == comm_id]
-            label = self._extract_community_label(comm_id, texts)
-            base = label
-            suffix = 1
-            while label in used:
-                label = f"{base} ({suffix})"
-                suffix += 1
-            used.add(label)
-            labels.append(label)
-
-        plt.figure(figsize=(12, 6))
-        sns.barplot(x=tweet_counts.values, y=labels, palette="viridis")
-        plt.xlabel("Tweet Count")
-        plt.ylabel("Community")
-        plt.title("Top Communities by Tweet Count", fontsize=TITLE_FONT_SIZE)
-        plt.tight_layout()
-        plt.show()
-
-
 def load_data():
-    tweets = pd.read_csv('../data/clean/clean_musk_tweets.csv')
-    stock = pd.read_csv('../data/clean/clean_stock.csv')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(script_dir, '..', 'data', 'clean')
+    
+    tweets_path = os.path.join(data_dir, 'clean_musk_tweets.csv')
+    stock_path = os.path.join(data_dir, 'clean_tesla_stock.csv')
+    
+    tweets = pd.read_csv(tweets_path)
+    stock = pd.read_csv(stock_path)
     stock['Date'] = pd.to_datetime(stock['Date']).dt.strftime('%Y-%m-%d')
     tweets = tweets.dropna(subset=['text', 'timestamp']).reset_index(drop=True)
     return tweets, stock
@@ -460,13 +416,9 @@ def main():
     builder.visualize_communities(f"Merged Communities ({len(set(builder.partition.values()))} communities)")
     builder.visualize_merged_community_graph()
 
-    builder.visualize_community_wordcloud()
-
     builder.analyze_community_stock_relationship(stock)
 
     builder.plot_community_timeline_overlay(stock)
-
-    builder.plot_top_communities_by_tweet_count()
 
     builder.compute_modularity()
 
