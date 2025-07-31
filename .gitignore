@@ -1,5 +1,6 @@
 *.DS_Store
 */__pycache__
+/__pycache__
 /.venv/
 /.idea/Data-Science-Final-Project.iml
 /.idea/inspectionProfiles/profiles_settings.xml
