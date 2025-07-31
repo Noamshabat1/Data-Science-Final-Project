@@ -71,3 +71,4 @@ urllib3==2.5.0
 vaderSentiment==3.3.2
 wcwidth==0.2.13
 xgboost==3.0.3
+python-louvain~=0.16

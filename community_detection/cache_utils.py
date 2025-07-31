@@ -2,7 +2,6 @@ import os
 import pickle
 import numpy as np
 
-
 class GraphCacheManager:
     def __init__(self, base_dir="."):
         self.base_dir = base_dir

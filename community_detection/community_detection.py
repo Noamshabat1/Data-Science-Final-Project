@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 import community as community_louvain
 from sentence_transformers import SentenceTransformer
-from cache_utils import GraphCacheManager
+from .cache_utils import GraphCacheManager
 from sklearn.manifold import TSNE
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -111,7 +111,6 @@ class TweetGraphBuilder:
 
         if self.graph is None:
             raise ValueError("Graph not built yet.")
-        # Lower resolution merges more nodes into fewer communities
         self.partition = community_louvain.best_partition(self.graph)
         self.partition_label = "louvain"
         self.cache.save_partition(self.partition, "louvain")
@@ -217,10 +216,8 @@ class TweetGraphBuilder:
                 G.add_edge(id1, id2, weight=sim)
 
         pos = nx.spring_layout(G, seed=SPRING_LAYOUT_SEED, k=SPRING_LAYOUT_K)
-        # Ensure small communities are visible: minimum size 10, scale by 10
         sizes = [max(G.nodes[n]['size'], NODE_SIZE_MINIMUM) * NODE_SIZE_SCALING for n in G.nodes()]
         plt.figure(figsize=(20, 18))
-        # Use tab20 colormap for clearer color separation
         cmap = plt.cm.get_cmap('tab20', len(G.nodes()) + 1)
         node_colors = [cmap(i) for i in range(len(G.nodes()))]
         nx.draw_networkx_nodes(G, pos, node_size=sizes, node_color=node_colors)
@@ -264,17 +261,15 @@ class TweetGraphBuilder:
             raise ValueError("Graph not built or communities not detected.")
 
         self.tweets['date'] = pd.to_datetime(self.tweets['timestamp']).dt.date
-        self.tweets['community'] = self.tweets.index.map(self.partition)
+        self.tweets['community_detection'] = self.tweets.index.map(self.partition)
 
-        # Compute stock returns and significant change indicator
         stock = stock.copy()
         stock['return'] = stock['Close'].pct_change(periods=3)
 
         stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
 
-        # Compute tweet counts by date/community, lagged by 1 day
-        tweet_counts = self.tweets.groupby(['date', 'community']).size().unstack(fill_value=0)
-        tweet_counts = tweet_counts.shift(1).dropna()  # lag tweets by 1 day
+        tweet_counts = self.tweets.groupby(['date', 'community_detection']).size().unstack(fill_value=0)
+        tweet_counts = tweet_counts.shift(1).dropna()
         stock['date'] = pd.to_datetime(stock['Date']).dt.date
         merged = pd.merge(tweet_counts, stock[['date', 'significant_change']], on='date')
 
@@ -285,11 +280,9 @@ class TweetGraphBuilder:
         mean_non_sig = non_sig_days.drop(columns=['significant_change', 'date']).mean()
 
         diff = mean_sig - mean_non_sig
-        
-        # Get top positive communities directly
+
         positive_diff = diff[diff > 0].sort_values(ascending=False).head(14)
-        
-        # Unique label assignment logic
+
         labels = {}
         used = set()
         for comm_id in positive_diff.index:
@@ -317,13 +310,11 @@ class TweetGraphBuilder:
         
         plt.xlabel('Average Increase in Tweets Before Significant Stock Days', fontsize=11)
         plt.title("Communities with Increased Tweet Activity Before Major Stock Movements", fontsize=TITLE_FONT_SIZE)
-        
-        # Add y-axis label on the right
+
         ax = plt.gca()
         ax.yaxis.set_label_position('right')
         plt.ylabel('Number of Tweets', fontsize=11)
-        
-        # Add value labels on bars
+
         for i, (idx, row) in enumerate(plot_data.iterrows()):
             plt.text(row['Increase in Tweets'] + 0.01, i, f'{row["Increase in Tweets"]:.2f}', 
                     va='center', fontsize=9)
@@ -345,19 +336,18 @@ class TweetGraphBuilder:
             raise ValueError("Graph not built or communities not detected.")
 
         self.tweets['date'] = pd.to_datetime(self.tweets['timestamp']).dt.date
-        self.tweets['community'] = self.tweets.index.map(self.partition)
+        self.tweets['community_detection'] = self.tweets.index.map(self.partition)
 
         stock = stock.copy()
         stock['return'] = stock['Close'].pct_change(periods=3)
         stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
         stock['date'] = pd.to_datetime(stock['Date']).dt.date
 
-        tweet_counts = self.tweets.groupby(['date', 'community']).size().unstack(fill_value=0)
+        tweet_counts = self.tweets.groupby(['date', 'community_detection']).size().unstack(fill_value=0)
         tweet_counts = tweet_counts.shift(1).dropna()
 
         merged = pd.merge(tweet_counts, stock[['date', 'Close']], on='date', how='inner')
 
-        # Compute impact score to select top communities
         stock['significant_change'] = stock['return'].abs() >= CHANGE_THRESHOLD
         sig_days = merged[merged['date'].isin(stock[stock['significant_change']]['date'])]
         non_sig_days = merged[~merged['date'].isin(stock[stock['significant_change']]['date'])]
@@ -368,7 +358,6 @@ class TweetGraphBuilder:
 
         top_communities = impact.head(top_n).index
 
-        # Build plot
         fig, ax1 = plt.subplots(figsize=(14, 6))
 
         ax1.plot(merged['date'], merged['Close'], color='black', label='Stock Price', linewidth=2)
@@ -377,7 +366,6 @@ class TweetGraphBuilder:
         ax1.set_title("Stock Price with Tweet Volume Overlay for Top Communities", fontsize=TITLE_FONT_SIZE + 2)
 
         ax2 = ax1.twinx()
-        # Use a high-contrast and colorblind-friendly palette
         colors = sns.color_palette("tab10", len(top_communities)) if len(top_communities) <= 10 else sns.color_palette("tab20", len(top_communities))
         for i, comm_id in enumerate(top_communities):
             label = self._extract_community_label(comm_id, [self.tweets.iloc[j]['text'] for j, cid in self.partition.items() if cid == comm_id])
