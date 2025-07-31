@@ -3,7 +3,6 @@ from model.build_data import load_and_merge_data
 from model.models import main as model_main
 
 
-# This script orchestrates the data preprocessing, model data building, and model training/evaluation.
 def main():
     print(" >>> Starting date preprocessing...")
     data_processing_main()
@@ -13,10 +12,9 @@ def main():
     print("Sample of the final dataset:")
     print(df_final.head())
 
-    print(" >>> Starting model training and evaluation...") 
+    print(" >>> Starting model training and evaluation...")
     model_main()
+
 
 if __name__ == "__main__":
     main()
-
-
