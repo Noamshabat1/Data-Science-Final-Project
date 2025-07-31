@@ -44,29 +44,25 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main_split_data(df: pd.DataFrame):
-    # Create boolean masks for comprehensive classification
     retweet_mask = pd.Series(False, index=df.index, dtype=bool)
     reply_mask = pd.Series(False, index=df.index, dtype=bool)
-    
-    # Retweet detection: boolean flag OR text pattern
+
     retweet_mask = retweet_mask | (df["isRetweet"] == "True")
     rt_pattern = r'^RT\s+@(\w+):\s*(.*)'
     retweet_mask = retweet_mask | df["text"].str.contains(rt_pattern, regex=True, na=False)
-    
-    # Reply detection: boolean flag OR text pattern (excluding retweets)
+
     reply_mask = reply_mask | (df["isReply"] == "True")
     at_pattern = r'^@\w+'
     reply_mask = reply_mask | df["text"].str.contains(at_pattern, regex=True, na=False)
-    
-    # Apply masks to split data
+
     retweets = df[retweet_mask].copy()
-    replies = df[reply_mask & (~retweet_mask)].copy()  # Exclude retweets from replies
+    replies = df[reply_mask & (~retweet_mask)].copy()
     originals = df[~retweet_mask & ~reply_mask].copy()
 
     total = len(df)
     categorized = len(retweets) + len(replies) + len(originals)
     logging.info(f"Split complete: {categorized}/{total} posts categorized")
-    
+
     return retweets, replies, originals
 
 
@@ -128,7 +124,7 @@ def main_data_splitter():
         len(replies), len(replies) / total * 100,
         len(originals), len(originals) / total * 100,
     )
-    
+
     return {
         'total': total,
         'retweets': len(retweets),

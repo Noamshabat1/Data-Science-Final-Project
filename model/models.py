@@ -1,20 +1,3 @@
-"""
-Tesla Stock‑Price Prediction Pipeline
-====================================
-
-A lean, tree‑model‑centric workflow that:
-
-1. Loads the engineered dataset.
-2. Augments the training set with a SMOTE‑style interpolator.
-3. Applies minimal preprocessing (log‑&‑z‑score only on the target).
-4. Trains three models (Opt‑XGB, Opt‑RF, linear‑SVR).
-5. Evaluates with RMSE / MAE / R² + directional‑accuracy.
-6. Generates plots (confusion, loss curves, time‑series, feature importance).
-7. Persists the best model together with metadata and preprocessing artefacts.
-
-"""
-
-# ───────────────────── Imports ──────────────────────────────────────────────
 import os
 import warnings
 from typing import Dict, List, Tuple
@@ -25,33 +8,20 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xgboost as xgb
+import matplotlib.dates as mdates
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import (mean_absolute_error, mean_squared_error,
-                             r2_score, confusion_matrix)
+from sklearn.metrics import (mean_absolute_error, mean_squared_error, r2_score, confusion_matrix)
 from sklearn.model_selection import train_test_split, validation_curve
 from sklearn.neighbors import NearestNeighbors
 from sklearn.svm import SVR
 
 warnings.filterwarnings("ignore")
 
-# ───────────────────── Paths ────────────────────────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "model", "output")
 
 
-# ───────────────────── data I/O ─────────────────────────────────────────────
-
-
 def load_and_prepare_data() -> pd.DataFrame:
-    """
-    Load the fully processed modelling dataset (`model_data.csv`).
-
-    Returns
-    -------
-    pd.DataFrame
-        The dataset containing engineered market, sentiment and embedding
-        features along with the target ``tesla_close``.
-    """
     data_path = os.path.join(PROJECT_ROOT, "data", "model", "model_data.csv")
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Expected file not found: {data_path}")
@@ -60,67 +30,35 @@ def load_and_prepare_data() -> pd.DataFrame:
 
 
 def prepare_features_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, List[str], pd.Series]:
-    """
-    Split *df* into feature matrix **X**, target **y** and optional timestamps.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        The full dataset returned from :func:`load_and_prepare_data`.
-
-    Returns
-    -------
-    X : pd.DataFrame
-    y : pd.Series
-    feature_cols : list[str]
-    timestamps : pd.Series or None
-    """
     exclude_cols = ["tesla_close", "timestamp"]
     if "tesla_close_original" in df.columns:
         exclude_cols.append("tesla_close_original")
-
     feature_cols = [c for c in df.columns if c not in exclude_cols]
-
     X = df[feature_cols]
     y = df["tesla_close"]
-    timestamps = df.get("timestamp")  # returns None if missing
+    timestamps = df.get("timestamp")
 
     return X, y, feature_cols, timestamps
 
 
-# ───────────────────── Target Scaling ──────────────────────────────────────
 def normalize_target_variable(y_train: pd.Series, y_test: pd.Series) -> Tuple[pd.Series, pd.Series, Dict[str, float]]:
-    """
-    Log‑transform + z‑score the target.
-
-    Returns *(y_train_norm, y_test_norm, scaler_dict)*.
-    """
     y_train_log = np.log(y_train)
     y_test_log = np.log(y_test)
-
     mean_, std_ = y_train_log.mean(), y_train_log.std()
-
     y_train_norm = (y_train_log - mean_) / std_
     y_test_norm = (y_test_log - mean_) / std_
-
     return y_train_norm, y_test_norm, {"mean": mean_, "std": std_}
 
 
 def inverse_transform_target(y_normalized: np.ndarray, target_scaler: Dict[str, float]) -> np.ndarray:
-    """Undo the log‑z‑score transformation."""
     y_log = y_normalized * target_scaler["std"] + target_scaler["mean"]
     return np.exp(y_log)
 
 
-# ───────────────────── Pre‑processing ──────────────────────────────────────
 def optimized_preprocessing(X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series,
                             feature_cols: List[str]):
-    """
-    Minimal prep: raw features + log/standardise **y** only.
-    """
     X_train_final = X_train.astype(float).copy()
     X_test_final = X_test.astype(float).copy()
-
     y_train_final, y_test_final, scaler = normalize_target_variable(y_train, y_test)
 
     normalization_objects = {
@@ -132,26 +70,8 @@ def optimized_preprocessing(X_train: pd.DataFrame, X_test: pd.DataFrame, y_train
     return (X_train_final, X_test_final, y_train_final, y_test_final, normalization_objects)
 
 
-# ───────────────────── Metrics ─────────────────────────────────────────────
 def calculate_direction_accuracy(y_true: np.ndarray, y_pred: np.ndarray,
                                  scaler: Dict[str, float] | None = None) -> float:
-    """
-    Directional accuracy - optionally on *real‑dollar* scale.
-
-    Parameters
-    ----------
-    y_true, y_pred : array‑like
-        Target and prediction vectors (either normalised or raw).
-    scaler : dict or None, optional
-        If you pass the "target_scaler" dict produced during preprocessing (keys "mean" and "std"), the function will
-        inverse‑transform both arrays to dollars before computing direction; otherwise it works on whatever scale you
-        provide.
-
-    Returns
-    -------
-    float
-        Percentage of samples for which the sign relative to the series mean is predicted correctly (0-100).
-    """
     if scaler is not None:
         y_true = inverse_transform_target(y_true, scaler)
         y_pred = inverse_transform_target(y_pred, scaler)
@@ -161,9 +81,6 @@ def calculate_direction_accuracy(y_true: np.ndarray, y_pred: np.ndarray,
 
 
 def evaluate_model(y_true, y_pred, model_name: str) -> Dict[str, float]:
-    """
-    Compute R², RMSE, MAE, MSE and directional‑accuracy.
-    """
     mse = mean_squared_error(y_true, y_pred)
     return {
         "model_name": model_name,
@@ -175,11 +92,7 @@ def evaluate_model(y_true, y_pred, model_name: str) -> Dict[str, float]:
     }
 
 
-# ───────────────────── Model Factory ───────────────────────────────────────
 def create_models(optimized_xgb=None, optimized_rf=None) -> Dict[str, object]:
-    """
-    Return a dict of model instances (Opt‑XGB, Opt‑RF, SVR baseline).
-    """
     models = {}
 
     if optimized_rf:
@@ -209,7 +122,6 @@ def create_models(optimized_xgb=None, optimized_rf=None) -> Dict[str, object]:
     return models
 
 
-# ───────────────────── Training helpers ────────────────────────────────────
 def train_single_model(name: str, model, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series,
                        y_test: pd.Series):
     try:
@@ -221,8 +133,8 @@ def train_single_model(name: str, model, X_train: pd.DataFrame, X_test: pd.DataF
         result = {
             "model": name,
             "train_r2": r2_score(y_train, y_pred_train),
-            "test_r2": metrics_test.pop("r2"),  # keep the clearer name
-            "r2": metrics_test.pop("r2", None),  # ← duplicate for compatibility
+            "test_r2": metrics_test.pop("r2"),
+            "r2": metrics_test.pop("r2", None),
             "test_rmse": metrics_test["rmse"],
             "test_mae": metrics_test["mae"],
             "test_accuracy": metrics_test["accuracy"],
@@ -234,19 +146,8 @@ def train_single_model(name: str, model, X_train: pd.DataFrame, X_test: pd.DataF
         return None, None
 
 
-def train_all_models(
-        X_train,
-        X_test,
-        y_train,
-        y_test,
-        target_scaler=None,
-        timestamps_test=None,
-        optimized_xgb=None,
-        optimized_rf=None,
-):
-    """
-    Train every model returned by :func:`create_models`.
-    """
+def train_all_models(X_train, X_test, y_train, y_test, target_scaler=None, timestamps_test=None, optimized_xgb=None,
+                     optimized_rf=None):
     models = create_models(optimized_xgb, optimized_rf)
     results, trained = [], {}
 
@@ -269,9 +170,8 @@ def train_all_models(
     return results, trained
 
 
-# ───────────────────── Plotting ────────────────────────────────────────────
+# Plotting
 def create_regression_confusion_matrix(y_true, y_pred, model_name, save_dir):
-    """Binary confusion matrix around the mean price."""
     os.makedirs(save_dir, exist_ok=True)
     mean_val = np.mean(y_true)
     cm = confusion_matrix(y_true > mean_val, y_pred > mean_val)
@@ -291,16 +191,13 @@ def create_regression_confusion_matrix(y_true, y_pred, model_name, save_dir):
 
 
 def create_loss_curve(model, model_name, X_train, y_train, save_dir):
-    """
-    Validation curves: n_estimators for RF; train & hold‑out RMSE for XGB.
-    """
     if not isinstance(model, (RandomForestRegressor, xgb.XGBRegressor)):
         return
 
     os.makedirs(save_dir, exist_ok=True)
     plt.figure(figsize=(10, 6))
 
-    # ――― RandomForest ―――
+    # RandomForest
     if isinstance(model, RandomForestRegressor):
         param_name, param_range = "n_estimators", [50, 100, 150, 200, 250, 300]
         train_sc, val_sc = validation_curve(
@@ -316,7 +213,7 @@ def create_loss_curve(model, model_name, X_train, y_train, save_dir):
         plt.plot(param_range, np.sqrt(-train_sc.mean(1)), "o-", label="TrainRMSE")
         plt.plot(param_range, np.sqrt(-val_sc.mean(1)), "o-", label="ValRMSE")
 
-    # ――― XGBoost ―――
+    # XGBoost
     else:
         X_tr, X_val, y_tr, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
         booster = xgb.XGBRegressor(**model.get_params())
@@ -334,23 +231,10 @@ def create_loss_curve(model, model_name, X_train, y_train, save_dir):
     plt.close()
 
 
-def create_prediction_line_chart(
-        y_true,
-        y_pred,
-        model_name: str,
-        save_dir: str,
-        target_scaler: dict | None = None,
-        timestamps: pd.Series | None = None,
-        smooth_window: int = 14,
-):
-    """
-    Chronological line chart with rolling‑mean smoothing and grey residual band.
-    """
-    import matplotlib.dates as mdates
-
+def create_prediction_line_chart(y_true, y_pred, model_name: str, save_dir: str, target_scaler: dict | None = None,
+                                 timestamps: pd.Series | None = None, smooth_window: int = 14):
     os.makedirs(save_dir, exist_ok=True)
 
-    # Inverse‑transform to dollars if needed
     if target_scaler:
         y_true_plot = inverse_transform_target(y_true, target_scaler)
         y_pred_plot = inverse_transform_target(y_pred, target_scaler)
@@ -361,7 +245,6 @@ def create_prediction_line_chart(
         ylabel = "Normalized Target Value"
         title_suffix = "Normalized Values"
 
-    # Build sorted DataFrame
     df_plot = pd.DataFrame(
         {
             "timestamp": (
@@ -374,10 +257,8 @@ def create_prediction_line_chart(
         }
     ).sort_values("timestamp")
 
-    # Rolling‑mean smoothing
     df_plot["predicted_smooth"] = (df_plot["predicted"].rolling(smooth_window, center=True).mean())
 
-    # Plot
     plt.figure(figsize=(15, 8))
     plt.plot(
         df_plot["timestamp"],
@@ -395,7 +276,6 @@ def create_prediction_line_chart(
         color="tab:orange",
     )
 
-    # Grey residual band
     plt.fill_between(
         df_plot["timestamp"],
         df_plot["actual"],
@@ -406,7 +286,6 @@ def create_prediction_line_chart(
         label="Residual",
     )
 
-    # Axis / labels
     plt.xlabel("Date" if timestamps is not None else "Sample Index")
     plt.ylabel(ylabel)
     plt.title(f"{model_name}: Actual vs Predicted {title_suffix}")
@@ -417,7 +296,6 @@ def create_prediction_line_chart(
     plt.legend()
     plt.grid(alpha=0.3)
 
-    # Correlation & means
     corr = np.corrcoef(df_plot["actual"], df_plot["predicted"])[0, 1]
     info = (
         f"Correlation: {corr:.4f}\n"
@@ -440,7 +318,6 @@ def create_prediction_line_chart(
 
 
 def create_feature_importance_plot(model, model_name, feature_cols, save_dir, top_n=15):
-    """Horizontal bar chart of the top‑N feature importances."""
     if not hasattr(model, "feature_importances_"):
         return
 
@@ -471,27 +348,17 @@ def create_model_plots(
         target_scaler: dict | None = None,
         timestamps_test: pd.Series | None = None,
 ):
-    """
-    Generate diagnostics for *model*.
-
-    Adds a light “bias‑correction” step:
-    fit a simple linear regression on (train_pred → y_train) and use it to
-    adjust the test set prediction.  Helps align mean level without retraining.
-    """
     from sklearn.linear_model import LinearRegression
 
     model_dir = os.path.join(OUTPUT_DIR, model_name.lower().replace(" ", "_"))
     os.makedirs(model_dir, exist_ok=True)
 
-    # --- Predictions -------------------------------------------------------
     y_pred_train = model.predict(X_train)
     y_pred_test_raw = model.predict(X_test)
 
-    # --- Bias correction ---------------------------------------------------
     lr = LinearRegression().fit(y_pred_train.reshape(-1, 1), y_train)
     y_pred_test = lr.predict(y_pred_test_raw.reshape(-1, 1))
 
-    # --- Plots -------------------------------------------------------------
     create_regression_confusion_matrix(y_test, y_pred_test, model_name, model_dir)
     create_loss_curve(model, model_name, X_train, y_train, model_dir)
     create_prediction_line_chart(
@@ -501,17 +368,13 @@ def create_model_plots(
         model_dir,
         target_scaler,
         timestamps_test,
-        smooth_window=7,  # ← adjust if desired to less smoothing the plot.
+        smooth_window=7
     )
     if hasattr(model, "feature_importances_"):
         create_feature_importance_plot(model, model_name, X_train.columns.tolist(), model_dir)
 
 
-# ───────────────────── SMOTE‑style Augmentation ────────────────────────────
 def apply_smote_regression(X_train, y_train, target_size_multiplier: float = 1.5, k_neighbors: int = 5):
-    """
-    Create synthetic samples by linear interpolation among k‑nearest neighbours.
-    """
     X_arr = X_train.values
     y_arr = y_train.values
     knn = NearestNeighbors(n_neighbors=k_neighbors + 1).fit(X_arr)
@@ -530,11 +393,7 @@ def apply_smote_regression(X_train, y_train, target_size_multiplier: float = 1.5
     return X_aug, y_aug
 
 
-# ───────────────────── Utility Split ───────────────────────────────────────
 def prepare_data_split(X, y, timestamps=None):
-    """
-    80/20 random split (shuffle=True) while keeping *timestamps* aligned.
-    """
     if timestamps is not None:
         X_tr, X_te, y_tr, y_te, ts_tr, ts_te = train_test_split(X, y, timestamps, test_size=0.2,
                                                                 random_state=42, shuffle=True)
@@ -543,11 +402,7 @@ def prepare_data_split(X, y, timestamps=None):
     return X_tr, X_te, y_tr, y_te, None, None
 
 
-# ───────────────────── Persistence ─────────────────────────────────────────
 def save_best_model(best_model, best_model_name, results_df, normalization_objects, feature_cols):
-    """
-    Dump the model, metadata, feature list & preprocessors under *OUTPUT_DIR*.
-    """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     model_path = os.path.join(OUTPUT_DIR, "best_model.joblib")
     joblib.dump(best_model, model_path)
@@ -567,9 +422,6 @@ def save_best_model(best_model, best_model_name, results_df, normalization_objec
 
 
 def display_results_summary(results: list[dict]) -> pd.DataFrame:
-    """
-    Pretty console table sorted by **test_r2**.
-    """
     results_df = pd.DataFrame(results).sort_values("test_r2", ascending=False)
 
     print(f"{'Model':<25} {'R²':<8} {'RMSE':<8} {'MAE':<8} {'Acc':<8}")
@@ -585,33 +437,24 @@ def display_results_summary(results: list[dict]) -> pd.DataFrame:
     return results_df
 
 
-# ───────────────────── Main orchestration ──────────────────────────────────
 def main() -> None:
-    """Run the full pipeline end‑to‑end."""
-    # Load data & split
     df = load_and_prepare_data()
     X, y, feature_cols, timestamps = prepare_features_target(df)
     X_tr, X_te, y_tr, y_te, ts_tr, ts_te = prepare_data_split(X, y, timestamps)
 
-    # SMOTE
     X_tr_aug, y_tr_aug = apply_smote_regression(X_tr, y_tr, 1.5, 5)
 
-    # 3. Minimal preprocessing
     (Xtr_final, Xte_final, ytr_final, yte_final, norm_objs,) = optimized_preprocessing(X_tr_aug, X_te, y_tr_aug, y_te,
                                                                                        feature_cols)
 
-    # 4. Train all models & gather metrics
     results, models = train_all_models(Xtr_final, Xte_final, ytr_final, yte_final, norm_objs["target_scaler"], ts_te)
 
-    # 5. Pretty console summary  (prints table)
     res_df = display_results_summary(results)
 
-    # 6. Pick best by test R²
     res_df = res_df.sort_values("test_r2", ascending=False).reset_index(drop=True)
     best_name = res_df.loc[0, "model"]
     best_model = models[best_name]
 
-    # 7. Persist best model & metadata
     save_best_model(best_model, best_name, res_df, norm_objs, feature_cols)
 
 

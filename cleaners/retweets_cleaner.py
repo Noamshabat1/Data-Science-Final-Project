@@ -5,15 +5,6 @@ from datetime import datetime
 
 
 def clean_retweets_data():
-    """
-    Cleans and processes the retweets data with retweet-specific operations:
-    - Extracts original tweet content from RT format
-    - Cleans retweet text
-    - Handles retweet-specific metadata
-    - Removes invalid/empty retweets
-    """
-
-    # Define file paths
     script_dir = os.path.dirname(os.path.realpath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, os.pardir))
     input_file = os.path.join(project_root, "data", "splitted", "musk_retweets.csv")
@@ -23,7 +14,6 @@ def clean_retweets_data():
     print("RETWEETS DATA CLEANER")
     print("=" * 60)
 
-    # Load the retweets data
     try:
         df = pd.read_csv(input_file)
         print(f"✓ Loaded {len(df):,} retweets from {input_file}")
@@ -34,24 +24,20 @@ def clean_retweets_data():
 
     print(f"\nInitial data shape: {df.shape}")
 
-    # Display basic info
     print(f"\ndata Overview:")
     print(f"- Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
     print(f"- Missing text: {df['text'].isna().sum()}")
 
-    # Start cleaning process
     print(f"\n" + "-" * 40)
     print("CLEANING PROCESS")
     print("-" * 40)
 
-    # 1. Remove retweets with missing text
     initial_count = len(df)
     df_clean = df.dropna(subset=['text']).copy()
     removed_empty = initial_count - len(df_clean)
     if removed_empty > 0:
         print(f"✓ Removed {removed_empty} retweets with missing text")
 
-    # 2. Clean and extract retweet content
     def extract_retweet_content(text):
         """Extract the original content from RT format"""
         if pd.isna(text):
@@ -59,7 +45,6 @@ def clean_retweets_data():
 
         text_str = str(text).strip()
 
-        # Pattern to match RT @username: content
         rt_pattern = r'^RT\s+@(\w+):\s*(.*)'
         match = re.match(rt_pattern, text_str, re.DOTALL)
 
@@ -68,40 +53,33 @@ def clean_retweets_data():
             original_content = match.group(2).strip()
             return original_author, original_content
         else:
-            # If not standard RT format, mark for removal
             return None, None
 
     print("✓ Extracting retweet content...")
 
-    # Apply content extraction
     extraction_results = df_clean['text'].apply(extract_retweet_content)
     df_clean['originalAuthor'] = [x[0] for x in extraction_results]
     df_clean['tweet'] = [x[1] for x in extraction_results]
 
-    # 3. Remove retweets that couldn't be properly parsed (non-RT format)
     before_parsing = len(df_clean)
     df_clean = df_clean.dropna(subset=['originalAuthor', 'tweet'])
     removed_unparseable = before_parsing - len(df_clean)
     if removed_unparseable > 0:
         print(f"✓ Removed {removed_unparseable} non-RT format entries")
 
-    # 3.1. Remove text column after extracting originalAuthor and originalContent
     if 'text' in df_clean.columns:
         df_clean = df_clean.drop(columns=['text'])
         print("✓ Removed text column")
 
-    # 4. Remove duplicates based on original content
     before_dedup = len(df_clean)
     df_clean = df_clean.drop_duplicates(subset=['tweet'], keep='first')
     removed_duplicates = before_dedup - len(df_clean)
     if removed_duplicates > 0:
         print(f"✓ Removed {removed_duplicates} duplicate retweets")
 
-    # 5. Clean timestamps
     print("✓ Processing timestamps...")
     df_clean['timestamp'] = pd.to_datetime(df_clean['timestamp'])
 
-    # 6. Clean and standardize original content text
     def clean_text_content(text):
         """Basic text cleaning for retweet content"""
         if pd.isna(text):
@@ -116,7 +94,7 @@ def clean_retweets_data():
 
     print("✓ Cleaning original content text...")
     df_clean['tweet'] = df_clean['tweet'].apply(clean_text_content)
-    
+
     # Remove rows that have only non-alphanumeric characters
     before_alpha_filter = len(df_clean)
     df_clean = df_clean[df_clean['tweet'].str.contains(r'[a-zA-Z0-9]', regex=True, na=False)]
@@ -174,7 +152,7 @@ def clean_retweets_data():
     except Exception as e:
         print(f"❌ Error saving file: {e}")
         return None
-    
+
     return {
         'initial_count': initial_count,
         'removed_empty': removed_empty,
