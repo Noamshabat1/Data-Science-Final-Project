@@ -12,7 +12,7 @@ def main():
     tweets_stats = clean_tweets_data()
     replies_stats = clean_replies()
     retweets_stats = clean_retweets_data()
-    tesla_stats = clean_stock_data()
+    clean_stock_data()
     
     # Combine all statistics
     all_stats = {
