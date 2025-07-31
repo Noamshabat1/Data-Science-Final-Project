@@ -1,218 +1,233 @@
-import warnings
-warnings.filterwarnings("ignore")
+"""
+build_data.py
+=============
 
-import os
-import re
+Merge Elon‑Musk Twitter data with Tesla OHLC and engineer
+sentiment, TF‑IDF and MiniLM‑embedding features.
+Outputs
+-------
+• data/model/model_data.csv
+• data/model/data_overview.png   (Figure1 for the report)
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Final, List
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.decomposition import PCA
-from sklearn.feature_extraction.text import TfidfVectorizer
-
 from sentence_transformers import SentenceTransformer
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from tqdm.auto import tqdm
 
-import nltk
-try:
-    nltk.data.find("vader_lexicon")
-except LookupError:
-    nltk.download("vader_lexicon", quiet=True)
+# ───────────────────── configuration ────────────────────────────────
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+CLEAN_DIR: Final[Path] = PROJECT_ROOT / "data" / "clean"
+MODEL_DIR: Final[Path] = PROJECT_ROOT / "data" / "model"
 
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-MODEL_DIR = DATA_DIR / "model"
-MODEL_DIR.mkdir(exist_ok=True)
+NUMERIC_COLS: Final[List[str]] = [
+    "retweetCount", "replyCount", "likeCount",
+    "quoteCount", "viewCount", "bookmarkCount",
+]
 
-KEYWORD_PATTERNS = {
-    "tesla": r"\btesla\b",
-    "stock": r"\bstock\b|\btsla\b",
-    "car": r"\bcar\b|\bvehicle\b|\bmodel\b",
-    "business": r"\bbusiness\b|\bcompany\b|\bmarket\b",
-    "people": r"\bpeople\b|\bteam\b|\bemployee\b|\bworker\b",
-    "tech": r"\btech\b|\btechnology\b|\bAI\b|\brobot\b|\bsoftware\b",
-    "energy": r"\benergy\b|\bbattery\b|\bsolar\b|\bcharging\b",
-    "space": r"\bspace\b|\bspacex\b|\brocket\b|\bmars\b",
-    "money": r"\bmoney\b|\bdollar\b|\bcost\b|\bprice\b|\bfunding\b|\bprofit\b"
-}
+TFIDF_MAX_FEAT: Final[int] = 1_000
+TFIDF_SVD_DIM: Final[int] = 10
+EMBED_DIM: Final[int] = 8
+EMBED_BATCH: Final[int] = 256
+EMBED_MODEL: Final[str] = "all-MiniLM-L6-v2"
 
-TFIDF_CONFIG = {
-    "ngram_range": (1, 2),
-    "max_features": 6000,
-    "min_df": 5,
-    "max_df": 0.8,
-    "stop_words": "english"
-}
 
-def load_all_tweets():
-    tweets_path = DATA_DIR / "clean" / "clean_musk_tweets.csv"
-    tweets = pd.read_csv(tweets_path)
-    tweets["timestamp"] = pd.to_datetime(tweets["timestamp"])
-    return tweets
+# ───────────────────── helper: social loaders ───────────────────────
+def _load_social(fname: str, *, source: str, text_col: str = "text") -> pd.DataFrame:
+    """
+    Load one cleaned Twitter CSV and harmonise column names.
 
-def load_tesla_stock():
-    stock_path = DATA_DIR / "clean" / "clean_tesla_stock.csv"
-    return pd.read_csv(stock_path)
+    Parameters
+    ----------
+    fname : str         Filename in *data/clean/*.
+    source : str        Tag: 'tweets', 'retweets', or 'replies'.
+    text_col : str      Column containing the post text.
 
-def aggregate_daily_tweets(tweets_df):
-    tweets_df["date"] = tweets_df["timestamp"].dt.date
-    
-    agg_data = tweets_df.groupby("date").agg({
-        "text": lambda x: " ".join(x.dropna().astype(str)),
-        "likeCount": ["count", "sum", "mean"],
-        "retweetCount": ["sum", "mean"],
-        "replyCount": ["sum", "mean"],
-        "quoteCount": ["sum", "mean"],
-        "viewCount": ["sum", "mean"],
-        "bookmarkCount": ["sum", "mean"]
-    }).reset_index()
-    
-    agg_data.columns = ["date", "all_posts"] + [
-        "_".join(filter(None, col)).strip() for col in agg_data.columns[2:]
-    ]
-    
-    agg_data.rename(columns={"likeCount_count": "tweet_count"}, inplace=True)
-    
-    return agg_data
+    Returns
+    -------
+    pd.DataFrame with *NUMERIC_COLS + timestamp + text + source*.
+    """
+    df = pd.read_csv(CLEAN_DIR / fname, usecols=NUMERIC_COLS + ["timestamp", text_col])
+    df = df.rename(columns={text_col: "text"})
+    df["source"] = source
+    return df
 
-def add_keyword_features(agg_data):
-    for kw, pattern in KEYWORD_PATTERNS.items():
-        agg_data[f"kw_{kw}"] = agg_data["all_posts"].str.count(pattern, flags=re.IGNORECASE)
-    return agg_data
 
-def add_sentiment_features(agg_data):
+def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse raw posts into one row per calendar day.
+
+    * Sums engagement metrics
+    * Concatenates all post texts (chronological, '<SEP>' delimiter)
+    """
+    df[NUMERIC_COLS] = df[NUMERIC_COLS].fillna(0)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["date"] = df["timestamp"].dt.date
+
+    text_blob = (
+        df.groupby("date")["text"]
+        .apply(lambda s: " <SEP> ".join(s.fillna("").astype(str)))
+        .rename("all_posts")
+    )
+    metrics = df.groupby("date")[NUMERIC_COLS].sum()
+
+    out = metrics.join(text_blob).reset_index()
+    out["timestamp"] = pd.to_datetime(out["date"])
+    return out.drop(columns="date")
+
+
+def _merge_stock(social: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align social features with Tesla close price using a backward as‑of merge.
+    """
+    stock = (
+        pd.read_csv(CLEAN_DIR / "clean_tesla_stock.csv", usecols=["Date", "Close"])
+        .rename(columns={"Date": "timestamp", "Close": "tesla_close"})
+    )
+    stock["timestamp"] = pd.to_datetime(stock["timestamp"], errors="coerce")
+    stock = stock.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    merged = pd.merge_asof(social.sort_values("timestamp"), stock, on="timestamp", direction="backward")
+    merged["tesla_close"] = merged["tesla_close"].ffill().bfill()
+    return merged
+
+
+# ───────────────────── feature generators ───────────────────────────
+def add_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
+    """VADER compound score (−1 … +1)."""
     print("· Generating sentiment feature")
-    
-    analyzer = SentimentIntensityAnalyzer()
-    
-    def compute_sentiment(text):
-        if pd.isna(text) or text.strip() == "":
-            return 0.0
-        return analyzer.polarity_scores(text)["compound"]
-    
-    agg_data["sentiment_mean"] = agg_data["all_posts"].apply(compute_sentiment)
-    return agg_data
+    analyser = SentimentIntensityAnalyzer()
+    df["sentiment_compound"] = df["all_posts"].apply(lambda t: analyser.polarity_scores(str(t))["compound"])
+    return df
 
-def add_tfidf_features(agg_data):
+
+def add_tfidf_features(df: pd.DataFrame) -> pd.DataFrame:
+    """10‑dim TF‑IDF topic vectors (tfidf_0 … tfidf_9)."""
     print("· Generating TF‑IDF features")
-    
-    texts = agg_data["all_posts"].fillna("").astype(str)
-    
-    vectorizer = TfidfVectorizer(**TFIDF_CONFIG)
-    tfidf_matrix = vectorizer.fit_transform(texts)
-    
-    pca = PCA(n_components=10, random_state=42)
-    tfidf_pca = pca.fit_transform(tfidf_matrix.toarray())
-    
-    tfidf_cols = [f"tfidf_{i}" for i in range(10)]
-    tfidf_df = pd.DataFrame(tfidf_pca, columns=tfidf_cols, index=agg_data.index)
-    
-    return pd.concat([agg_data, tfidf_df], axis=1)
+    vec = TfidfVectorizer(
+        max_features=TFIDF_MAX_FEAT,
+        ngram_range=(1, 2),
+        stop_words="english",
+        min_df=2,
+        max_df=0.95,
+    )
+    matrix = vec.fit_transform(df["all_posts"])
+    svd = TruncatedSVD(TFIDF_SVD_DIM, random_state=42)
+    reduced = svd.fit_transform(matrix)
+    for i in range(TFIDF_SVD_DIM):
+        df[f"tfidf_{i}"] = reduced[:, i]
+    return df
 
-def add_embedding_features(agg_data):
+
+def add_embeddings(df: pd.DataFrame) -> pd.DataFrame:
+    """8 principal components of MiniLM sentence embeddings."""
     print("· Generating MiniLM embeddings")
-    
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    texts = agg_data["all_posts"].fillna("").astype(str).tolist()
-    
-    embeddings = model.encode(texts, batch_size=32, show_progress_bar=False)
-    
-    pca = PCA(n_components=8, random_state=42)
-    embeddings_pca = pca.fit_transform(embeddings)
-    
-    embed_cols = [f"embed_{i}" for i in range(8)]
-    embed_df = pd.DataFrame(embeddings_pca, columns=embed_cols, index=agg_data.index)
-    
-    return pd.concat([agg_data, embed_df], axis=1)
+    model = SentenceTransformer(EMBED_MODEL)
+    embeds = np.empty((len(df), model.get_sentence_embedding_dimension()))
 
-def add_technical_indicators(stock_df):
-    stock_df = stock_df.copy()
-    stock_df["Date"] = pd.to_datetime(stock_df["Date"])
-    
-    stock_df = stock_df.sort_values("Date")
-    stock_df["ret_1d"] = stock_df["Close"].pct_change()
-    stock_df["ret_5d"] = stock_df["Close"].pct_change(periods=5)
-    stock_df["vol_5d"] = stock_df["ret_1d"].rolling(5).std()
-    stock_df["rsi_14"] = calculate_rsi(stock_df["Close"], window=14)
-    
-    return stock_df
+    for start in tqdm(range(0, len(df), EMBED_BATCH), desc="Embedding"):
+        end = start + EMBED_BATCH
+        embeds[start:end] = model.encode(df["all_posts"].iloc[start:end].tolist(), convert_to_numpy=True)
 
-def calculate_rsi(prices, window=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    for i in range(EMBED_DIM):
+        df[f"embed_{i}"] = embeds[:, i]
+    return df
 
-def create_overview_figure(tweets_agg, stock_clean):
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    
-    tweet_dates = pd.to_datetime(tweets_agg["date"])
-    stock_dates = pd.to_datetime(stock_clean["Date"])
-    
-    axes[0, 0].plot(tweet_dates, tweets_agg["tweet_count"], color="steelblue", linewidth=1.5)
-    axes[0, 0].set_title("Daily Tweet Volume", fontsize=12, pad=10)
-    axes[0, 0].set_ylabel("Number of Tweets")
-    axes[0, 0].grid(True, alpha=0.3)
-    
-    axes[0, 1].plot(stock_dates, stock_clean["Close"], color="darkgreen", linewidth=1.5)
-    axes[0, 1].set_title("Tesla Stock Price", fontsize=12, pad=10)
-    axes[0, 1].set_ylabel("Price ($)")
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    sentiment_colors = tweets_agg["sentiment_mean"].apply(lambda x: "green" if x > 0 else "red")
-    axes[1, 0].scatter(tweet_dates, tweets_agg["sentiment_mean"], c=sentiment_colors, alpha=0.6, s=30)
-    axes[1, 0].axhline(y=0, color="gray", linestyle="--", alpha=0.7)
-    axes[1, 0].set_title("Daily Sentiment Score", fontsize=12, pad=10)
-    axes[1, 0].set_ylabel("Sentiment Score")
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    stock_clean_subset = stock_clean.dropna(subset=["vol_5d"])
-    axes[1, 1].plot(pd.to_datetime(stock_clean_subset["Date"]), stock_clean_subset["vol_5d"], 
-                    color="orange", linewidth=1.5)
-    axes[1, 1].set_title("5‑Day Volatility", fontsize=12, pad=10)
-    axes[1, 1].set_ylabel("Volatility")
-    axes[1, 1].grid(True, alpha=0.3)
-    
-    for ax in axes.flat:
-        ax.tick_params(axis="x", rotation=45)
-    
-    save_to = MODEL_DIR / "data_overview.png"
-    fig.suptitle("Figure 1 – data‑processing overview", fontsize=14, y=0.98)
+
+# ───────────────────── reporting figure helper ───────────────────────
+def create_data_overview_plot(df: pd.DataFrame, save_to: Path) -> None:
+    """
+    4‑panel Figure1– data‑processing overview.
+
+    Panels: (A) engagement mix – log‑scaled,
+            (B) sentiment histogram,
+            (C) Tesla close price (log‑$),
+            (D) mean |TF‑IDF component|.
+    """
+    import matplotlib.pyplot as plt
+
+    mean_counts = df[NUMERIC_COLS].mean()
+    tfidf_cols = [c for c in df.columns if c.startswith("tfidf_")]
+    tfidf_mean = df[tfidf_cols].abs().mean()
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    (ax0, ax1), (ax2, ax3) = axes
+
+    # (A) Engagement mix  –– log‑scaled
+    ax0.bar(mean_counts.index, mean_counts.values, color="tab:orange", alpha=0.75)
+    ax0.set_yscale("log")
+    ax0.set_title("(A) Avg. daily engagement mix (log scale)")
+    ax0.set_ylabel("Mean count (log)")
+    ax0.tick_params(axis="x", rotation=35)
+
+    # (B) Sentiment histogram
+    ax1.hist(df["sentiment_compound"], bins=30, color="tab:green", alpha=0.75)
+    ax1.set_title("(B) VADER compound distribution")
+    ax1.set_xlabel("Compound score")
+    ax1.set_ylabel("Frequency")
+
+    # (C) Tesla close price
+    ax2.plot(df["timestamp"], df["tesla_close"], color="tab:blue")
+    ax2.set_yscale("log")
+    ax2.set_title("(C) Tesla close price (log $)")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Close price ($, log)")
+
+    # (D) TF‑IDF magnitudes
+    ax3.bar(tfidf_mean.index, tfidf_mean.values, color="tab:purple", alpha=0.8)
+    ax3.set_title("(D) Mean |TF‑IDF component|")
+    ax3.set_ylabel("Mean abs value")
+    ax3.tick_params(axis="x", rotation=35)
+
+    fig.suptitle("Figure 1 – data‑processing overview", fontsize=14, y=0.98)
     fig.tight_layout()
     fig.subplots_adjust(top=0.9)
     fig.savefig(save_to, dpi=300)
     plt.close()
-    print(f"Saved Figure 1 to {save_to}")
+    print(f"✔ Saved Figure 1 to {save_to}")
 
+
+# ───────────────────── main pipeline ────────────────────────────────
 def load_and_merge_data() -> pd.DataFrame:
-    tweets = load_all_tweets()
-    stock = load_tesla_stock()
-    
+    """
+    Build feature frame + overview figure, write to disk, return DataFrame.
+    """
     print("\n=== BUILDING DATASET ===")
-    tweets_agg = aggregate_daily_tweets(tweets)
-    tweets_agg = add_keyword_features(tweets_agg)
-    tweets_agg = add_sentiment_features(tweets_agg)
-    tweets_agg = add_tfidf_features(tweets_agg)
-    tweets_agg = add_embedding_features(tweets_agg)
-    
-    stock_clean = add_technical_indicators(stock)
-    
-    tweets_agg["date"] = pd.to_datetime(tweets_agg["date"])
-    stock_clean["Date"] = pd.to_datetime(stock_clean["Date"])
-    
-    merged = pd.merge(tweets_agg, stock_clean, left_on="date", right_on="Date", how="inner")
-    
-    create_overview_figure(tweets_agg, stock_clean)
-    
+
+    tweets = _load_social("clean_musk_tweets.csv", source="tweets")
+    retweets = _load_social("clean_musk_retweets.csv", source="retweets", text_col="tweet")
+    replies = _load_social("clean_musk_replies.csv", source="replies")
+
+    social = _aggregate_daily(pd.concat([tweets, retweets, replies], ignore_index=True))
+    merged = _merge_stock(social)
+
+    merged = add_sentiment_features(merged)
+    merged = add_tfidf_features(merged)
+    merged = add_embeddings(merged)
+
+    # report figure
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    create_data_overview_plot(merged, MODEL_DIR / "data_overview.png")
+
+    # final clean‑up
+    merged.drop(columns="all_posts", inplace=True)
+    assert merged.isna().sum().sum() == 0, "NaNs present after feature creation"
+
     out_path = MODEL_DIR / "model_data.csv"
     merged.to_csv(out_path, index=False)
-    print(f"Saved dataset to {out_path}  shape={merged.shape}\n")
+    print(f"✔ Saved dataset to {out_path}  shape={merged.shape}\n")
     return merged
 
+
+# ───────────────────── CLI entry point ───────────────────────────────
 if __name__ == "__main__":
     df_final = load_and_merge_data()
-    print("Sample of the final dataset:")
     print(df_final.head())
